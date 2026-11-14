@@ -1,0 +1,985 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Theo Dainis (melodee-tess) */
+/* TSP1: Tessera's own project record (included by project.c; docs/design/PROJECT_FORMAT.md in tessera-notes). One
+ * object a slot (storage.c OBJ_PROJ0..3) with all of the music, the generators and cords too, as parts:
+ *
+ *   "TSP1", u32 length (the whole record), u16 part count, u16 0; the parts; u32 FNV-1a of everything before it
+ *   a part: u8 id, u8 version, u16 length, then its bytes
+ *
+ * A reader skips a part it does not know, and a part that is missing leaves its defaults, so a new feature adds a part
+ * (or a new version of one) without a converter. A record is checked whole (tsp_valid) before anything of the music
+ * playing is replaced (project_restore_runtime, then tsp_restore). Older records (FBKK, FUN) are not read: a slot
+ * holding one reads as empty (Theo 2026-10-22: projects are disposable while this is built). Little-endian, as both the
+ * FM-1 and the host tests are. */
+#define TSP_MAGIC 0x31505354u                   /* "TSP1" */
+#define TSP_HEAD 12u
+#define TSP_STEP_BYTES 10u                      /* step v2: 80 bits */
+enum { TSP_META = 1, TSP_TRACKS, TSP_STEPS, TSP_TIMING, TSP_SONG, TSP_MOTION, TSP_FM6, TSP_DRUM, TSP_REC, TSP_NAME,
+       TSP_TESSERA, TSP_CORDS, TSP_SUB, TSP_MIDI, TSP_KEY, TSP_SEED, TSP_HUMAN, TSP_ACC, TSP_GRAV, TSP_HOW, TSP_ORACLE,
+       TSP_ENERGY, TSP_DEV, TSP_TRANSP, TSP_TUNE, TSP_SOUND, TSP_CHAIN, TSP_ENTRY, TSP_PLAN, TSP_PERF, TSP_HOLD,
+       TSP_CCN, TSP_FKEY, TSP_SPLIT, TSP_FMODE, TSP_PGEN, TSP_DMAP, TSP_EORDER, TSP_USCALE, TSP_SDIR, TSP_MHOLD,
+       TSP_STRUM, TSP_BUS, TSP_MVCA, TSP_MDEPTH, TSP_MHCLK,
+       TSP_PARTS };   /* (TSP_SUB: each track's SHAPE; none: EVEN;
+                                              * TSP_MIDI: each track's MIDI OUT channel; none: AUTO; TSP_KEY: KEY LINK; none: OWN;
+                                              * TSP_SEED: each track's SOURCE, then each one's KEEP; none: OFF, FREE;
+                                              * TSP_HUMAN: each track's HUMAN TIME; none: TWEAK HUMAN's timing, as it was;
+                                              * TSP_ACC: each track's Accumulate LIMIT, then each one's MODE; none: 7, WRAP;
+                                              * TSP_GRAV: each track's GRAVITY (STEP as seed); none: 0;
+                                              * TSP_HOW: each track's STEP EVOLVE HOW; none: DRIFT;
+                                              * TSP_ORACLE: each track's ORACLE patch; none: its preset's;
+                                              * TSP_ENERGY: ENERGY's LEVEL + 100, then each track's DEPTH; none: 0, 100;
+                                              * TSP_DEV: each track's FORM DEVELOP; none: 0, exact returns;
+                                              * TSP_TRANSP: each track's MIDI OUT TRANSPOSE + 48; none: 0;
+                                              * TSP_TUNE: TUNE, then the user tunings (tune.h); none: OFF, empty;
+                                              * TSP_SOUND: each track's SOUND, 1 OFF; none: ON;
+                                              * TSP_CHAIN: form chaining's FORM, PHRASE, WANDER, the four REPEATs, then
+                                              * each track's FOLLOW (0 not set, 1, 2 OWN), then each one's SKIP; none:
+                                              * OFF, 8 bars, 0, 1 each, not set, 0;
+                                              * TSP_ENTRY: Entries' ENTRIES, DWELL, STYLE, FADE, then each track's
+                                              * ROLE; none: 0 (off), 2, FADE, 2 bars, AUTO;
+                                              * TSP_PLAN: the planner's LENGTH, SHAPE, PEAK, COUNT, END, then USER's
+                                              * eight levels; none: FREE, ARCH, 62, 3, STOP, the arch tessera_init sets;
+                                              * TSP_PERF: PERF's four MACROs, written only when one is not 0; none: 0;
+                                              * TSP_HOLD: each track's FOLLOW HOLD, 0 OFF, 1..4 a track; none: OFF;
+                                              * TSP_CCN: each cord's CC number (CC OUT, 0..119; CORD_MAX of them); none: 1 each;
+                                              * TSP_FKEY: the CHAIN's KEY B, KEY C, each + 12, written only when one is
+                                              * not 0; none: 0, 0;
+                                              * TSP_SPLIT: each track's SPLIT, then each one's HOW, written only when one
+                                              * is not 0; none: 0, DOUBLE;
+                                              * TSP_FMODE: each track's FOLLOW HOW, then each one's RHYTHM, written only
+                                              * when one is not 0; none: SAME, OWN;
+                                              * TSP_PGEN: each track's PAT GEN, then each track's 8 slots of
+                                              * TESS_PG_BYTES (pat_gen.c), written only when one is ON; none: OFF;
+                                              * TSP_DMAP: each track's MIDI OUT DRUM MAP, written only when one is
+                                              * not GM; none: GM;
+                                              * TSP_USCALE: the USER scale playing (1..4), then the four USER
+                                              * scales, 16 bits each (uscale.h), written only when one plays;
+                                              * none: SCL's scale, the device's USER scales kept;
+                                              * TSP_EORDER: each track's Entries ORDER, 0 AUTO, 1..4, written only when
+                                              * one is not 0; none: AUTO;
+                                              * TSP_SDIR: each track's 8 patterns' DIR (SEQ_*), written only when one
+                                              * is not FWD; none: FWD;
+                                              * TSP_MHOLD: the HOLD mods, a u16 mask (bit i: cord i, saved in TSP_CORDS
+                                              * as BI), written only when one is; none: no HOLD;
+                                              * TSP_STRUM: each track's CHORD STRUM (ms), then each one's DIR, written
+                                              * only when one STRUM is not 0; none: OFF, UP;
+                                              * TSP_BUS: the MIX buses' A MODE, A LAG, B MODE, B LAG (cord.c), written
+                                              * only when one is not 0; none: SUM, OFF;
+                                              * TSP_MVCA: the mods of mods that SCALE (G7), a u16 mask (bit i: cord
+                                              * i), written only when one is; none: all ADD (older firmware: ADD);
+                                              * TSP_MDEPTH: MOD DEPTH (G9, 0..100), written only when not 100;
+                                              * none: 100;
+                                              * TSP_MHCLK: each HOLD mod's clock (G2), a nibble each (cord i: byte
+                                              * i / 2, its low nibble when even), 0 the bar, 1..4 a track's notes,
+                                              * written only when one is not 0; none: every one by the bar */
+_Static_assert(TSP_ORACLE == 21 && TSP_ENERGY == 22 && TSP_DEV == 23 && TSP_TRANSP == 24 && TSP_TUNE == 25 &&
+               TSP_SOUND == 26 && TSP_CHAIN == 27 && TSP_ENTRY == 28 && TSP_PLAN == 29 && TSP_PERF == 30 &&
+               TSP_HOLD == 31 && TSP_CCN == 32 && TSP_FKEY == 33 && TSP_SPLIT == 34 && TSP_FMODE == 35 &&
+               TSP_PGEN == 36 && TSP_DMAP == 37 && TSP_EORDER == 38 && TSP_USCALE == 39 &&
+               TSP_SDIR == 40 && TSP_MHOLD == 41 && TSP_STRUM == 42 && TSP_BUS == 43 &&
+               TSP_MVCA == 44 && TSP_MDEPTH == 45 && TSP_MHCLK == 46,
+               "the parts' numbers are stored: never renumbered");
+#if MELODEE_FLASH
+_Static_assert(TSP_MAX <= ST_PROJ_MAX, "a record fits one project copy");
+#endif
+
+/* ---- writing */
+typedef struct { uint8_t *b; uint32_t pos, part, n; int ok; } tsp_w_t;
+static void tsp_byte(tsp_w_t *w, uint32_t v) { if (w->pos < TSP_MAX - 4u) w->b[w->pos++] = (uint8_t)v; else w->ok = 0; }
+static void tsp_u16(tsp_w_t *w, uint32_t v) { tsp_byte(w, v); tsp_byte(w, v >> 8); }
+static void tsp_bytes(tsp_w_t *w, const void *p, uint32_t n)
+{
+    if (w->pos + n > TSP_MAX - 4u) { w->ok = 0; return; }
+    memcpy(w->b + w->pos, p, n);
+    w->pos += n;
+}
+static void tsp_begin(tsp_w_t *w, uint32_t id, uint32_t ver)   /* (its length filled in by tsp_end) */
+{
+    tsp_byte(w, id); tsp_byte(w, ver); tsp_u16(w, 0);
+    w->part = w->pos;
+}
+static void tsp_end(tsp_w_t *w)
+{
+    uint32_t len = w->pos - w->part;
+    if (len > 0xFFFFu) { w->ok = 0; return; }
+    w->b[w->part - 2u] = (uint8_t)len; w->b[w->part - 1u] = (uint8_t)(len >> 8);
+    w->n++;
+}
+
+/* step v2, 80 bits: notes 4 x 7, kind 4 (n 0..4, 5 tie, 6 rest; +8 recorded), accent and slide 2, velocity 7, hits 8,
+ * accents / recorded gate 8, chance 8, RATCH 2, NUDGE 4, the pitch accumulator 4 (-7..+7, 0 off), RATCH's high bit 1
+ * (x5..x8; 0 in a record of before it), the condition 4 (SC_*; 0 in a record of before it, every pass) */
+static int tsp_step_pack(uint8_t *b, const step_t *s)
+{
+    uint32_t pos = 0, j;
+    if (s->n > 4u || s->time > ST_REST || s->vel > 127u || s->probability > 101u || s->climb == 8u || !step_acc_valid(s)) return 0;
+    memset(b, 0, TSP_STEP_BYTES);
+    for (j = 0; j < 4u; j++) { if (s->note[j] > 127u) return 0; proj_bits_put(b, &pos, s->note[j], 7u); }
+    proj_bits_put(b, &pos, (s->time == ST_NOTE ? s->n : s->time == ST_TIE ? 5u : 6u) | (s->flags & SF_RECORDED ? 8u : 0u), 4u);
+    proj_bits_put(b, &pos, s->flags & 3u, 2u);
+    proj_bits_put(b, &pos, s->vel, 7u);
+    proj_bits_put(b, &pos, s->hit, 8u);
+    proj_bits_put(b, &pos, s->acc, 8u);
+    proj_bits_put(b, &pos, s->probability, 8u);
+    proj_bits_put(b, &pos, s->sub & 3u, 2u);
+    proj_bits_put(b, &pos, (s->sub >> 2) & 15u, 4u);
+    proj_bits_put(b, &pos, s->climb, 4u);
+    proj_bits_put(b, &pos, (s->sub >> 6) & 1u, 1u);
+    proj_bits_put(b, &pos, step_cond(s), 4u);
+    return 1;
+}
+static int tsp_step_unpack(step_t *s, const uint8_t *b)
+{
+    uint32_t pos = 0, j, meta, r;
+    memset(s, 0, sizeof *s);
+    for (j = 0; j < 4u; j++) s->note[j] = (uint8_t)proj_bits_get(b, &pos, 7u);
+    meta = proj_bits_get(b, &pos, 4u);
+    s->n = (meta & 7u) < 5u ? (uint8_t)(meta & 7u) : 0u;
+    s->time = (meta & 7u) < 5u ? ST_NOTE : (meta & 7u) == 5u ? ST_TIE : ST_REST;
+    s->flags = (uint8_t)(proj_bits_get(b, &pos, 2u) | (meta & 8u ? SF_RECORDED : 0u));
+    s->vel = (uint8_t)proj_bits_get(b, &pos, 7u);
+    s->hit = (uint8_t)proj_bits_get(b, &pos, 8u);
+    s->acc = (uint8_t)proj_bits_get(b, &pos, 8u);
+    s->probability = (uint8_t)proj_bits_get(b, &pos, 8u);
+    r = proj_bits_get(b, &pos, 2u);
+    s->sub = (uint8_t)(r | proj_bits_get(b, &pos, 4u) << 2);
+    s->climb = (uint8_t)proj_bits_get(b, &pos, 4u);
+    s->sub |= (uint8_t)(proj_bits_get(b, &pos, 1u) << 6);
+    step_set_cond(s, proj_bits_get(b, &pos, 4u));
+    return (meta & 7u) < 7u && s->probability <= 101u && s->climb != 8u && step_acc_valid(s);
+}
+
+/* the timed notes: the 32 owners' counts (11 bits each, as FUN's directory), then each note in 8 bytes */
+static int tsp_rec_put(tsp_w_t *w, const project_t *q)
+{
+    uint8_t dir[PROJ_REC_DIR_BYTES];
+    uint32_t owner, i, d;
+    memset(dir, 0, sizeof dir);
+    for (owner = 0; owner < NTRK * NPAT; owner++) {
+        uint32_t count = 0;
+        for (i = 0; i < RECORD_MAX; i++) count += q->recording[i].vel && (q->recording[i].owner & 31u) == owner;
+        d = owner * 11u;
+        proj_bits_put(dir, &d, count, 11u);
+    }
+    tsp_bytes(w, dir, sizeof dir);
+    for (owner = 0; owner < NTRK * NPAT; owner++)
+        for (i = 0; i < RECORD_MAX; i++) {
+            const recorded_note_t *r = &q->recording[i];
+            uint8_t v[8];
+            uint32_t pos = 0;
+            if (!r->vel || (r->owner & 31u) != owner) continue;
+            if (!recording_valid(r)) return 0;
+            memset(v, 0, sizeof v);
+            proj_bits_put(v, &pos, r->on, 16); proj_bits_put(v, &pos, r->duration, 16);
+            proj_bits_put(v, &pos, r->note, 7); proj_bits_put(v, &pos, r->vel, 7);
+            proj_bits_put(v, &pos, r->step, 8); proj_bits_put(v, &pos, r->owner >> 5, 3);
+            proj_bits_put(v, &pos, (uint32_t)(r->pitch + 24), 6); proj_bits_put(v, &pos, r->length, 1);
+            tsp_bytes(w, v, sizeof v);
+        }
+    return 1;
+}
+static int tsp_rec_get(project_t *q, const uint8_t *b, uint32_t len)
+{
+    uint32_t owner, i, at = 0, d;
+    const uint8_t *v = b + PROJ_REC_DIR_BYTES;
+    if (len < PROJ_REC_DIR_BYTES) return 0;
+    for (owner = 0; owner < NTRK * NPAT; owner++) {
+        d = owner * 11u;
+        uint32_t count = proj_bits_get(b, &d, 11u);
+        if (count > RECORD_MAX - at || PROJ_REC_DIR_BYTES + (at + count) * 8u > len) return 0;
+        for (i = 0; i < count; i++, at++, v += 8) {
+            recorded_note_t *r = &q->recording[at];
+            uint32_t pos = 0;
+            r->on = (uint16_t)proj_bits_get(v, &pos, 16); r->duration = (uint16_t)proj_bits_get(v, &pos, 16);
+            r->note = (uint8_t)proj_bits_get(v, &pos, 7); r->vel = (uint8_t)proj_bits_get(v, &pos, 7);
+            r->step = (uint8_t)proj_bits_get(v, &pos, 8); r->owner = (uint8_t)(owner | proj_bits_get(v, &pos, 3) << 5);
+            r->pitch = (int8_t)((int32_t)proj_bits_get(v, &pos, 6) - 24); r->length = (uint8_t)proj_bits_get(v, &pos, 1);
+            if (!r->vel || !recording_valid(r)) return 0;
+        }
+    }
+    return PROJ_REC_DIR_BYTES + at * 8u == len;
+}
+
+/* the highest Tessera block version this build knows: its own (tessera_pk_bytes: 0 past it) */
+static uint32_t tsp_tess_ver(void)
+{
+    uint32_t v = 1;
+    while (tessera_pk_bytes(v + 1u)) v++;
+    return v;
+}
+
+/* q (and, with runtime, the live patterns, song chain, motion tags, generators and cords) -> raw; its length, 0 when q
+ * holds a value no field can take. runtime commits each track's current pattern first, as saving always did */
+static uint32_t tsp_pack(uint8_t *raw, const project_t *q, int runtime)
+{
+    tsp_w_t w = {raw, TSP_HEAD, 0, 0, 1};
+    uint32_t t, b, i, f = motion_guard(), sum, magic = TSP_MAGIC;
+    for (t = 0; t < NTRK; t++)
+        if (q->pattern[t] >= NPAT || q->t[t].engine >= NENGINES || !drum_patch_valid(&q->drum[t])) { motion_unguard(f); return 0; }
+    if (!chain_valid(&q->chain) || !motion_valid(&q->motion) || P_COUNT > 255u || G_COUNT > 255u) { motion_unguard(f); return 0; }
+    memset(raw, 0, TSP_HEAD);
+
+    tsp_begin(&w, TSP_META, 1);                        /* the selected track, the format bytes, the globals */
+    tsp_byte(&w, q->sel); tsp_byte(&w, q->parts); tsp_byte(&w, q->phys); tsp_byte(&w, G_COUNT);
+    for (i = 0; i < G_COUNT; i++) tsp_u16(&w, (uint16_t)q->g[i]);
+    tsp_end(&w);
+
+    tsp_begin(&w, TSP_TRACKS, 1);                      /* each track's engine, preset and parameters by id */
+    tsp_byte(&w, P_COUNT);
+    for (t = 0; t < NTRK; t++) {
+        tsp_byte(&w, q->t[t].engine); tsp_byte(&w, q->t[t].preset);
+        for (i = 0; i < P_COUNT; i++) tsp_u16(&w, (uint16_t)q->t[t].p[i]);
+    }
+    tsp_end(&w);
+
+    tsp_begin(&w, TSP_STEPS, 1);                       /* the current pattern of each track, then all 32 patterns */
+    for (t = 0; t < NTRK; t++) tsp_byte(&w, runtime ? trk[t].pattern : q->pattern[t]);
+    for (t = 0; t < NTRK; t++) {
+        uint32_t active = runtime ? trk[t].pattern : q->pattern[t];
+        if (runtime) pattern_commit(&trk[t]);
+        for (b = 0; b < NPAT; b++)
+            for (i = 0; i < NSTEP; i++) {
+                static const step_t empty = {{0}, 0, ST_REST, 0, 0, 0, 0, 0, 0, 0};
+                const step_t *s = b == active ? &q->t[t].step[i] : runtime ? &pattern_at(t, b)->step[i] : &empty;
+                uint8_t v[TSP_STEP_BYTES];
+                if (!tsp_step_pack(v, s)) { motion_unguard(f); return 0; }
+                tsp_bytes(&w, v, sizeof v);
+            }
+    }
+    tsp_end(&w);
+
+    tsp_begin(&w, TSP_TIMING, 1);                      /* each pattern's LEN DIV SWING GATE */
+    for (t = 0; t < NTRK; t++)
+        for (b = 0; b < NPAT; b++)
+            for (i = 0; i < 4u; i++) {
+                uint32_t active = runtime ? trk[t].pattern : q->pattern[t];
+                int16_t v = runtime ? pattern_at(t, b)->timing[i] : (b != active ? TP[P_SLEN + i].def : q->t[t].p[P_SLEN + i]);
+                tsp_byte(&w, (uint8_t)v);
+            }
+    tsp_end(&w);
+
+    tsp_begin(&w, TSP_SONG, 1);                        /* the song chain, each row's patterns */
+    tsp_bytes(&w, &q->chain, sizeof q->chain);
+    if (runtime) tsp_bytes(&w, chain_patterns, sizeof chain_patterns);
+    else for (i = 0; i < sizeof chain_patterns; i++) tsp_byte(&w, 0);
+    tsp_end(&w);
+
+    tsp_begin(&w, TSP_MOTION, 1);                      /* the motion, each event's pattern */
+    tsp_bytes(&w, &q->motion, sizeof q->motion);
+    if (runtime) tsp_bytes(&w, motion_pattern, sizeof motion_pattern);
+    else for (i = 0; i < sizeof motion_pattern; i++) tsp_byte(&w, 0);
+    tsp_end(&w);
+
+    tsp_begin(&w, TSP_FM6, 1);                         /* each track's FM6 patch and function settings */
+    for (t = 0; t < NTRK; t++)
+        for (i = 0; i < FM6_PACKED; i++) { if (q->fm6[t][i] > 127u) w.ok = 0; tsp_byte(&w, q->fm6[t][i]); }
+    tsp_byte(&w, q->fm6_fn_ok);
+    tsp_bytes(&w, q->fm6_fn, sizeof q->fm6_fn);
+    tsp_end(&w);
+
+    tsp_begin(&w, TSP_ORACLE, 1);                      /* each track's ORACLE patch (eng_oracle.c, OR_N bytes) */
+    for (t = 0; t < NTRK; t++) { if (!or_patch_ok(q->oracle[t])) w.ok = 0; tsp_bytes(&w, q->oracle[t], OR_N); }
+    tsp_end(&w);
+
+    tsp_begin(&w, TSP_DRUM, 1);                        /* each track's kit offsets */
+    for (t = 0; t < NTRK; t++) {
+        uint8_t v[DRUM_WIRE_BYTES];
+        drum_patch_pack(v, &q->drum[t]);
+        tsp_bytes(&w, v, sizeof v);
+    }
+    tsp_end(&w);
+
+    tsp_begin(&w, TSP_REC, 1);                         /* the timed notes */
+    if (!tsp_rec_put(&w, q)) w.ok = 0;
+    tsp_end(&w);
+
+    tsp_begin(&w, TSP_NAME, 1);                        /* the name, 0-padded */
+    {
+        char n[PROJ_NAME_LEN + 1u];
+        uint8_t v[PROJ_NAME_LEN];
+        memset(v, 0, sizeof v);
+        memcpy(v, n, proj_name_get(n, (const uint8_t *)q->name));
+        tsp_bytes(&w, v, sizeof v);
+    }
+    tsp_end(&w);
+
+    if (runtime) {                                     /* the generators and the cords, as they are now */
+        uint8_t blk[TESSERA_PK_BYTES];
+        tsp_begin(&w, TSP_TESSERA, 1);
+        tsp_byte(&w, tsp_tess_ver());
+        tessera_pack(blk);
+        tsp_bytes(&w, blk, sizeof blk);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_CORDS, 1);
+        {
+            uint8_t c[CORD_PK_BYTES];
+            cord_pack(c);
+            tsp_bytes(&w, c, sizeof c);
+        }
+        tsp_end(&w);
+        if (cord_hold_mask()) {                        /* (HOLD mods: only when one is) */
+            tsp_begin(&w, TSP_MHOLD, 1);
+            tsp_u16(&w, cord_hold_mask());
+            tsp_end(&w);
+        }
+        if (cord_vca_mask()) {                         /* (SCALE mods of mods: only when one is) */
+            tsp_begin(&w, TSP_MVCA, 1);
+            tsp_u16(&w, cord_vca_mask());
+            tsp_end(&w);
+        }
+        {
+            uint8_t hc[CORD_HCLK_BYTES];
+            if (cord_hold_clk_pack(hc)) {              /* (HOLD's clocks: only when one is a track's notes) */
+                tsp_begin(&w, TSP_MHCLK, 1);
+                tsp_bytes(&w, hc, sizeof hc);
+                tsp_end(&w);
+            }
+        }
+        if (cord_mdepth_get() < 100u) {                /* (MOD DEPTH: only when turned down) */
+            tsp_begin(&w, TSP_MDEPTH, 1);
+            tsp_byte(&w, cord_mdepth_get());
+            tsp_end(&w);
+        }
+        if (cord_bus_get(0) | cord_bus_get(1) | cord_bus_get(2) | cord_bus_get(3)) {   /* (the MIX buses: only when */
+            tsp_begin(&w, TSP_BUS, 1);                                                 /* one is not SUM, OFF) */
+            for (uint32_t k = 0; k < 4u; k++) tsp_byte(&w, cord_bus_get(k));
+            tsp_end(&w);
+        }
+        tsp_begin(&w, TSP_CCN, 1);                     /* (CC OUT: each cord's CC number) */
+        for (uint32_t i = 0; i < CORD_MAX; i++) tsp_byte(&w, cord_cc_num(i));   /* (past CORD_LIVE: 1) */
+        tsp_end(&w);
+        tsp_begin(&w, TSP_SUB, 1);                     /* (SUB: each track's SHAPE, outside the Tessera block) */
+        tsp_bytes(&w, tessera.sub_shape, NTRK);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_MIDI, 1);                    /* (MIDI OUT: each track's channel) */
+        tsp_bytes(&w, tessera.midi_ch, NTRK);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_TRANSP, 1);                  /* (MIDI OUT: each track's TRANSPOSE, + 48) */
+        for (uint32_t k = 0; k < NTRK; k++)
+            tsp_byte(&w, (uint32_t)(k < TESSERA_TRACKS ? tessera.midi_tr[k] + TESS_MIDI_TR : TESS_MIDI_TR));
+        tsp_end(&w);
+        tsp_begin(&w, TSP_SOUND, 1);                   /* (MIDI OUT: each track's SOUND, 1 OFF) */
+        for (uint32_t k = 0; k < NTRK; k++)
+            tsp_byte(&w, k < TESSERA_TRACKS ? tessera.sound_off[k] : 0u);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_KEY, 1);                     /* (KEY LINK, the project's) */
+        tsp_byte(&w, tessera.key_link);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_SEED, 1);                    /* (STEP as seed: each track's SOURCE, each one's KEEP) */
+        tsp_bytes(&w, tessera.sd_src, NTRK);
+        tsp_bytes(&w, tessera.sd_keep, NTRK);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_HUMAN, 1);                   /* (HUMAN TIME: each track's) */
+        tsp_bytes(&w, tessera.sub_human, NTRK);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_ACC, 1);                     /* (the pitch accumulator: each track's LIMIT, then MODE) */
+        tsp_bytes(&w, tessera.acc_limit, NTRK);
+        tsp_bytes(&w, tessera.acc_mode, NTRK);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_GRAV, 1);                    /* (STEP as seed's GRAVITY: each track's) */
+        tsp_bytes(&w, tessera.sd_grav, NTRK);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_HOW, 1);                     /* (STEP EVOLVE's HOW: each track's) */
+        tsp_bytes(&w, tessera.sv_how, NTRK);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_ENERGY, 1);                  /* (ENERGY's LEVEL, the project's, then each track's DEPTH) */
+        tsp_bytes(&w, &(uint8_t){(uint8_t)(tessera.en_level + 100)}, 1);
+        tsp_bytes(&w, tessera.en_depth, NTRK);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_DEV, 1);                     /* (FORM's DEVELOP: each track's) */
+        tsp_bytes(&w, tessera.fm_dev, NTRK);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_CHAIN, 1);                   /* (form chaining: the project's, then each track's) */
+        tsp_byte(&w, tessera.fc_form);
+        tsp_byte(&w, tessera.fc_phrase);
+        tsp_byte(&w, tessera.fc_wander);
+        tsp_bytes(&w, tessera.fc_rep, 4);
+        tsp_bytes(&w, tessera.fc_follow, NTRK);
+        tsp_bytes(&w, tessera.fc_skip, NTRK);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_ENTRY, 1);                   /* (Entries: the project's, then each track's ROLE) */
+        tsp_byte(&w, tessera.et_amount);
+        tsp_byte(&w, tessera.et_dwell);
+        tsp_byte(&w, tessera.et_style);
+        tsp_byte(&w, tessera.et_fade);
+        tsp_bytes(&w, tessera.et_role, NTRK);
+        tsp_end(&w);
+        tsp_begin(&w, TSP_PLAN, 1);                    /* (the piece planner: the project's) */
+        tsp_byte(&w, tessera.pl_length);
+        tsp_byte(&w, tessera.pl_shape);
+        tsp_byte(&w, tessera.pl_peak);
+        tsp_byte(&w, tessera.pl_count);
+        tsp_byte(&w, tessera.pl_end);
+        tsp_bytes(&w, tessera.pl_user, 8);
+        tsp_end(&w);
+        if (tessera.macro[0] | tessera.macro[1] | tessera.macro[2] | tessera.macro[3]) {
+            tsp_begin(&w, TSP_PERF, 1);                /* (PERF's MACROs: only when set, so older firmware sees none) */
+            tsp_bytes(&w, tessera.macro, 4);
+            tsp_end(&w);
+        }
+        if (tessera.fc_key[0] | tessera.fc_key[1]) {
+            tsp_begin(&w, TSP_FKEY, 1);                /* (the CHAIN's KEY B / C, + 12: only when set, as PERF) */
+            tsp_byte(&w, (uint8_t)(tessera.fc_key[0] + 12));
+            tsp_byte(&w, (uint8_t)(tessera.fc_key[1] + 12));
+            tsp_end(&w);
+        }
+        for (t = 0; t < NTRK; t++)                     /* (TIMING's SPLIT, HOW: only when set, as PERF) */
+            if (tessera.sub_split[t] | tessera.sub_split_how[t]) {
+                tsp_begin(&w, TSP_SPLIT, 1);
+                tsp_bytes(&w, tessera.sub_split, NTRK);
+                tsp_bytes(&w, tessera.sub_split_how, NTRK);
+                tsp_end(&w);
+                break;
+            }
+        for (t = 0; t < NTRK; t++)                     /* (FOLLOW's HOW, RHYTHM: only when set, as PERF) */
+            if (tessera.follow_how[t] | tessera.follow_rhy[t]) {
+                tsp_begin(&w, TSP_FMODE, 1);
+                tsp_bytes(&w, tessera.follow_how, NTRK);
+                tsp_bytes(&w, tessera.follow_rhy, NTRK);
+                tsp_end(&w);
+                break;
+            }
+        for (t = 0; t < NTRK; t++)                     /* (PAT GEN: only when on, the patterns' slots) */
+            if (tessera.pat_gen[t]) {
+                tsp_begin(&w, TSP_PGEN, 1);
+                tsp_bytes(&w, tessera.pat_gen, NTRK);
+                for (uint32_t k = 0; k < NTRK; k++) tsp_bytes(&w, tessera_pg_slots(k), NPAT * TESS_PG_BYTES);
+                tsp_end(&w);
+                break;
+            }
+        for (t = 0; t < NTRK; t++)                     /* (MIDI OUT's DRUM MAP: only when one is not GM) */
+            if (tessera.midi_dmap[t]) {
+                tsp_begin(&w, TSP_DMAP, 1);
+                tsp_bytes(&w, tessera.midi_dmap, NTRK);
+                tsp_end(&w);
+                break;
+            }
+        for (t = 0; t < NTRK; t++)                     /* (Entries' ORDER: only when set, as PERF) */
+            if (tessera.et_order[t]) {
+                tsp_begin(&w, TSP_EORDER, 1);
+                tsp_bytes(&w, tessera.et_order, NTRK);
+                tsp_end(&w);
+                break;
+            }
+        for (t = 0; t < NTRK * NPAT; t++)              /* (DIR: only when a pattern is not FWD) */
+            if (pattern_dir[t / NPAT][t % NPAT]) {
+                tsp_begin(&w, TSP_SDIR, 1);
+                tsp_bytes(&w, pattern_dir, sizeof pattern_dir);
+                tsp_end(&w);
+                break;
+            }
+        for (t = 0; t < NTRK; t++)                     /* (CHORD's STRUM and DIR: only when one strums, as PERF) */
+            if (tessera.ch_strum[t]) {
+                tsp_begin(&w, TSP_STRUM, 1);
+                tsp_bytes(&w, tessera.ch_strum, 2u * NTRK);   /* (then ch_sdir, next to it) */
+                tsp_end(&w);
+                break;
+            }
+        tsp_begin(&w, TSP_HOLD, 1);                    /* (FOLLOW's HOLD: each track's) */
+        tsp_bytes(&w, tessera.follow_hold, NTRK);
+        tsp_end(&w);
+        if (uscale_on()) {                             /* (a USER scale playing: it, then all four) */
+            tsp_begin(&w, TSP_USCALE, 1);
+            tsp_byte(&w, uscale_sel);
+            for (t = 0; t < USCALE_SLOTS; t++) tsp_u16(&w, uscale_mask[t]);
+            tsp_end(&w);
+        }
+        tsp_begin(&w, TSP_TUNE, 1);                    /* (TUNE, then each user tuning: its degree count, 0 empty, */
+        tsp_byte(&w, tune_sel);                        /* else its name, title and degrees as int32) */
+        for (t = 0; t < TUNE_SLOTS; t++) {
+            tsp_byte(&w, tune_micro[t].count);
+            if (!tune_micro[t].count) continue;
+            tsp_bytes(&w, tune_slot[t].name, TUNE_NAME);
+            tsp_bytes(&w, tune_slot[t].title, TUNE_TITLE);
+            for (i = 1; i <= tune_micro[t].count; i++) {
+                tsp_u16(&w, (uint32_t)tune_slot[t].pitch[i]);
+                tsp_u16(&w, (uint32_t)tune_slot[t].pitch[i] >> 16);
+            }
+        }
+        tsp_end(&w);
+    }
+    motion_unguard(f);
+    if (!w.ok) return 0;
+    memcpy(raw, &magic, 4); memcpy(raw + 4, &(uint32_t){w.pos + 4u}, 4);
+    raw[8] = (uint8_t)w.n; raw[9] = (uint8_t)(w.n >> 8);
+    sum = proj_hash(raw, w.pos);
+    memcpy(raw + w.pos, &sum, 4);
+    return w.pos + 4u;
+}
+
+/* ---- reading */
+static struct { uint32_t at[TSP_PARTS], len[TSP_PARTS]; uint8_t ver[TSP_PARTS]; } tsp_seen;   /* the record tsp_valid read */
+static uint32_t tsp_u16_at(const uint8_t *b) { return b[0] | (uint32_t)b[1] << 8; }
+
+/* the TUNE part (p, len bytes; tsp_pack's): 1 a valid one; apply: TUNE and the slots from it (tune.h) */
+static int tsp_tune_read(const uint8_t *p, uint32_t len, int apply)
+{
+    uint32_t at = 1, k, i, n;
+    int32_t pitch[TUNE_DEGREES + 1u];
+    if (!len || p[0] > TUNE_SLOTS) return 0;
+    for (k = 0; k < TUNE_SLOTS; k++) {
+        if (at >= len) return 0;
+        n = p[at++];
+        if (!n) continue;
+        if (n > TUNE_DEGREES || at + TUNE_NAME + TUNE_TITLE + 4u * n > len) return 0;
+        pitch[0] = 0;
+        for (i = 1; i <= n; i++) {
+            const uint8_t *v = p + at + TUNE_NAME + TUNE_TITLE + 4u * (i - 1u);
+            pitch[i] = (int32_t)(v[0] | (uint32_t)v[1] << 8 | (uint32_t)v[2] << 16 | (uint32_t)v[3] << 24);
+        }
+        if (!tune_ok((const char *)p + at, (const char *)p + at + TUNE_NAME, n, pitch)) return 0;
+        if (apply) (void)tune_put(k, (const char *)p + at, (const char *)p + at + TUNE_NAME, n, pitch);
+        at += TUNE_NAME + TUNE_TITLE + 4u * n;
+    }
+    if (at != len) return 0;
+    if (apply) tune_sel = p[0];
+    return 1;
+}
+
+/* raw (len bytes) is a whole TSP1 record whose every part checks out: 1, and proj_scratch holds its project (the
+ * patterns other than the current ones, the song's and motion's pattern tags, the generators and the cords stay in raw
+ * for tsp_restore). 0: not one (proj_scratch then undefined) */
+static int tsp_valid(const uint8_t *raw, uint32_t len)
+{
+    project_t *q = &proj_scratch;
+    uint32_t magic, size, sum, n, pos = TSP_HEAD, t, b, i, np = P_COUNT;
+    if (len < TSP_HEAD + 4u || len > TSP_MAX) return 0;
+    memcpy(&magic, raw, 4); memcpy(&size, raw + 4, 4); memcpy(&sum, raw + len - 4u, 4);
+    if (magic != TSP_MAGIC || size != len || sum != proj_hash(raw, len - 4u)) return 0;
+    n = tsp_u16_at(raw + 8);
+    memset(&tsp_seen, 0, sizeof tsp_seen);
+    for (i = 0; i < n; i++) {                          /* the part table: every part inside the record, once */
+        uint32_t id, plen;
+        if (pos + 4u > len - 4u) return 0;
+        id = raw[pos]; plen = tsp_u16_at(raw + pos + 2u);
+        if (pos + 4u + plen > len - 4u) return 0;
+        if (id && id < TSP_PARTS) {
+            if (tsp_seen.at[id]) return 0;
+            tsp_seen.at[id] = pos + 4u; tsp_seen.len[id] = plen; tsp_seen.ver[id] = raw[pos + 1u];
+        }
+        pos += 4u + plen;
+    }
+    if (pos != len - 4u) return 0;
+
+    memset(q, 0, sizeof *q);                           /* defaults for what a record leaves out */
+    q->magic = PROJ_MAGIC; q->size = sizeof *q; q->parts = NPART; q->phys = PROJ_PHYS;
+    for (i = 0; i < G_COUNT; i++) q->g[i] = GP[i].def;
+    for (t = 0; t < NTRK; t++) {
+        q->t[t].engine = 0;
+        for (i = 0; i < P_COUNT; i++) q->t[t].p[i] = param_desc_of(0, i)->def;
+        for (i = 0; i < NSTEP; i++) q->t[t].step[i].time = ST_REST;
+    }
+    chain_defaults(&q->chain);
+
+    if (tsp_seen.at[TSP_META] && tsp_seen.ver[TSP_META] == 1u) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_META];
+        uint32_t ng = p[3];
+        if (tsp_seen.len[TSP_META] != 4u + 2u * ng || p[0] >= NTRK || (p[1] != 0u && p[1] != NPART) || p[2] > PROJ_PHYS) return 0;
+        q->sel = p[0]; q->parts = p[1]; q->phys = p[2];
+        for (i = 0; i < ng && i < G_COUNT; i++) q->g[i] = (int16_t)tsp_u16_at(p + 4u + 2u * i);
+    }
+    if (tsp_seen.at[TSP_TRACKS] && tsp_seen.ver[TSP_TRACKS] == 1u) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_TRACKS];
+        np = p[0];
+        if (np < 8u || np > P_COUNT || tsp_seen.len[TSP_TRACKS] != 1u + NTRK * (2u + 2u * np)) return 0;
+        for (t = 0, p++; t < NTRK; t++) {
+            int16_t values[P_COUNT], def[P_COUNT];
+            q->t[t].engine = p[0]; q->t[t].preset = p[1];
+            if (q->t[t].engine >= NENGINES) return 0;
+            for (i = 0; i < np; i++) values[i] = (int16_t)tsp_u16_at(p + 2u + 2u * i);
+            for (i = 0; i < P_COUNT; i++) def[i] = param_desc_of(q->t[t].engine, i)->def;
+            params_by_count(q->t[t].p, values, np, def);
+            p += 2u + 2u * np;
+        }
+    }
+    if (tsp_seen.at[TSP_STEPS]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_STEPS];
+        if (tsp_seen.ver[TSP_STEPS] != 1u || tsp_seen.len[TSP_STEPS] != NTRK + NTRK * NPAT * NSTEP * TSP_STEP_BYTES) return 0;
+        for (t = 0; t < NTRK; t++) { if (p[t] >= NPAT) return 0; q->pattern[t] = p[t]; }
+        for (t = 0, p += NTRK; t < NTRK; t++)
+            for (b = 0; b < NPAT; b++)
+                for (i = 0; i < NSTEP; i++, p += TSP_STEP_BYTES) {
+                    step_t s;
+                    if (!tsp_step_unpack(&s, p)) return 0;
+                    if (b == q->pattern[t]) q->t[t].step[i] = s;
+                }
+    }
+    if (tsp_seen.at[TSP_TIMING]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_TIMING];
+        if (tsp_seen.ver[TSP_TIMING] != 1u || tsp_seen.len[TSP_TIMING] != NTRK * NPAT * 4u) return 0;
+        for (t = 0; t < NTRK; t++)
+            for (b = 0; b < NPAT; b++)
+                for (i = 0; i < 4u; i++) {
+                    int16_t v = p[(t * NPAT + b) * 4u + i];
+                    if (v < TP[P_SLEN + i].min || v > TP[P_SLEN + i].max) return 0;
+                    if (b == q->pattern[t]) q->t[t].p[P_SLEN + i] = v;   /* (the current pattern's: the track's) */
+                }
+    }
+    if (tsp_seen.at[TSP_SONG]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_SONG];
+        if (tsp_seen.ver[TSP_SONG] != 1u || tsp_seen.len[TSP_SONG] != sizeof q->chain + sizeof chain_patterns) return 0;
+        memcpy(&q->chain, p, sizeof q->chain);
+        if (!chain_valid(&q->chain)) return 0;
+        for (i = 0; i < sizeof chain_patterns; i++) if (p[sizeof q->chain + i] >= NPAT) return 0;
+    }
+    if (tsp_seen.at[TSP_MOTION]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_MOTION], *tag;
+        if (tsp_seen.ver[TSP_MOTION] != 1u || tsp_seen.len[TSP_MOTION] != sizeof q->motion + sizeof motion_pattern) return 0;
+        memcpy(&q->motion, p, sizeof q->motion);
+        proj_motion_ids(&q->motion, np);
+        if (!motion_valid(&q->motion)) return 0;
+        tag = p + sizeof q->motion;
+        for (i = 0; i < q->motion.count; i++) {          /* (an event a pattern: no two alike in one) */
+            if (tag[i] >= NPAT) return 0;
+            for (uint32_t j = 0; j < i; j++)
+                if (tag[i] == tag[j] && q->motion.event[i].place == q->motion.event[j].place &&
+                    q->motion.event[i].param == q->motion.event[j].param) return 0;
+        }
+    }
+    if (tsp_seen.at[TSP_FM6]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_FM6];
+        if (tsp_seen.ver[TSP_FM6] != 1u || tsp_seen.len[TSP_FM6] != sizeof q->fm6 + 1u + sizeof q->fm6_fn) return 0;
+        for (t = 0; t < NTRK; t++)
+            for (i = 0; i < FM6_PACKED; i++) { if (p[t * FM6_PACKED + i] > 127u) return 0; q->fm6[t][i] = p[t * FM6_PACKED + i]; }
+        p += sizeof q->fm6;
+        q->fm6_fn_ok = p[0] ? 1u : 0u;
+        memcpy(q->fm6_fn, p + 1, sizeof q->fm6_fn);
+        if (q->fm6_fn_ok) for (t = 0; t < NTRK; t++) if (!fm6_fn_ok(q->fm6_fn[t])) return 0;
+    }
+    if (tsp_seen.at[TSP_DRUM]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_DRUM];
+        if (tsp_seen.ver[TSP_DRUM] != 1u || tsp_seen.len[TSP_DRUM] != NTRK * DRUM_WIRE_BYTES) return 0;
+        for (t = 0; t < NTRK; t++) if (!drum_patch_unpack(&q->drum[t], p + t * DRUM_WIRE_BYTES)) return 0;
+    }
+    if (tsp_seen.at[TSP_REC]) {
+        if (tsp_seen.ver[TSP_REC] != 1u || !tsp_rec_get(q, raw + tsp_seen.at[TSP_REC], tsp_seen.len[TSP_REC])) return 0;
+    }
+    if (tsp_seen.at[TSP_NAME]) {
+        char nm[PROJ_NAME_LEN + 1u];
+        if (tsp_seen.ver[TSP_NAME] != 1u || tsp_seen.len[TSP_NAME] != PROJ_NAME_LEN) return 0;
+        memcpy(q->name, nm, proj_name_get(nm, raw + tsp_seen.at[TSP_NAME]));
+    }
+    if (tsp_seen.at[TSP_TESSERA]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_TESSERA];
+        if (tsp_seen.ver[TSP_TESSERA] != 1u || tsp_seen.len[TSP_TESSERA] < 1u ||
+            tsp_seen.len[TSP_TESSERA] != 1u + tessera_pk_bytes(p[0]) || !tessera_check(p[0], p + 1)) return 0;
+    }
+    if (tsp_seen.at[TSP_SUB]) {
+        if (tsp_seen.ver[TSP_SUB] != 1u || tsp_seen.len[TSP_SUB] != NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (raw[tsp_seen.at[TSP_SUB] + k] >= SUB_SHAPES) return 0;
+    }
+    if (tsp_seen.at[TSP_MIDI]) {
+        if (tsp_seen.ver[TSP_MIDI] != 1u || tsp_seen.len[TSP_MIDI] != NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (raw[tsp_seen.at[TSP_MIDI] + k] > TESS_MIDI_OFF) return 0;
+    }
+    if (tsp_seen.at[TSP_TRANSP]) {
+        if (tsp_seen.ver[TSP_TRANSP] != 1u || tsp_seen.len[TSP_TRANSP] != NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (raw[tsp_seen.at[TSP_TRANSP] + k] > 2u * TESS_MIDI_TR) return 0;
+    }
+    if (tsp_seen.at[TSP_SOUND]) {
+        if (tsp_seen.ver[TSP_SOUND] != 1u || tsp_seen.len[TSP_SOUND] != NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (raw[tsp_seen.at[TSP_SOUND] + k] > 1u) return 0;
+    }
+    if (tsp_seen.at[TSP_KEY]) {
+        if (tsp_seen.ver[TSP_KEY] != 1u || tsp_seen.len[TSP_KEY] != 1u || raw[tsp_seen.at[TSP_KEY]] > 1u) return 0;
+    }
+    if (tsp_seen.at[TSP_SEED]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_SEED];
+        if (tsp_seen.ver[TSP_SEED] != 1u || tsp_seen.len[TSP_SEED] != 2u * NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (p[k] > TESSERA_TRACKS || p[NTRK + k] >= TESS_SD_KEEPS) return 0;
+    }
+    q->oracle_ok = 0;                                  /* (a record of before ORACLE: each track its preset's) */
+    if (tsp_seen.at[TSP_ORACLE]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_ORACLE];
+        if (tsp_seen.ver[TSP_ORACLE] != 1u || tsp_seen.len[TSP_ORACLE] != NTRK * OR_N) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) { if (!or_patch_ok(p + k * OR_N)) return 0; memcpy(q->oracle[k], p + k * OR_N, OR_N); }
+        q->oracle_ok = 1;
+    }
+    if (tsp_seen.at[TSP_GRAV]) {
+        if (tsp_seen.ver[TSP_GRAV] != 1u || tsp_seen.len[TSP_GRAV] != NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (raw[tsp_seen.at[TSP_GRAV] + k] > 100u) return 0;
+    }
+    if (tsp_seen.at[TSP_HOW]) {
+        if (tsp_seen.ver[TSP_HOW] != 1u || tsp_seen.len[TSP_HOW] != NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (raw[tsp_seen.at[TSP_HOW] + k] >= TESS_SV_HOWS) return 0;
+    }
+    if (tsp_seen.at[TSP_ENERGY]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_ENERGY];
+        if (tsp_seen.ver[TSP_ENERGY] != 1u || tsp_seen.len[TSP_ENERGY] != 1u + NTRK || p[0] > 200u) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (p[1u + k] > 100u) return 0;
+    }
+    if (tsp_seen.at[TSP_TUNE] && (tsp_seen.ver[TSP_TUNE] != 1u ||
+                                  !tsp_tune_read(raw + tsp_seen.at[TSP_TUNE], tsp_seen.len[TSP_TUNE], 0))) return 0;
+    if (tsp_seen.at[TSP_DEV]) {
+        if (tsp_seen.ver[TSP_DEV] != 1u || tsp_seen.len[TSP_DEV] != NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (raw[tsp_seen.at[TSP_DEV] + k] > 100u) return 0;
+    }
+    if (tsp_seen.at[TSP_CHAIN]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_CHAIN];
+        if (tsp_seen.ver[TSP_CHAIN] != 1u || tsp_seen.len[TSP_CHAIN] != 7u + 2u * NTRK) return 0;
+        if (p[0] > 6u || p[1] > 2u || p[2] > 100u) return 0;
+        for (uint32_t k = 0; k < 4u; k++) if (p[3u + k] < 1u || p[3u + k] > 8u) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (p[7u + k] > 2u || p[7u + NTRK + k] > 100u) return 0;
+    }
+    if (tsp_seen.at[TSP_ENTRY]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_ENTRY];
+        if (tsp_seen.ver[TSP_ENTRY] != 1u || tsp_seen.len[TSP_ENTRY] != 4u + NTRK) return 0;
+        if (p[0] > 100u || p[1] < 1u || p[1] > 8u || p[2] > 1u || p[3] < 1u || p[3] > 4u) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (p[4u + k] > 5u) return 0;
+    }
+    if (tsp_seen.at[TSP_PLAN]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_PLAN];
+        if (tsp_seen.ver[TSP_PLAN] != 1u || tsp_seen.len[TSP_PLAN] != 13u) return 0;
+        if (p[0] > 21u || p[1] > 9u || p[2] > 100u || p[3] < 2u || p[3] > 8u || p[4] > 3u) return 0;
+        for (uint32_t k = 0; k < 8u; k++) if (p[5u + k] > 100u) return 0;
+    }
+    if (tsp_seen.at[TSP_PERF]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_PERF];
+        if (tsp_seen.ver[TSP_PERF] != 1u || tsp_seen.len[TSP_PERF] != 4u) return 0;
+        for (uint32_t k = 0; k < 4u; k++) if (p[k] > 100u) return 0;
+    }
+    if (tsp_seen.at[TSP_FKEY]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_FKEY];
+        if (tsp_seen.ver[TSP_FKEY] != 1u || tsp_seen.len[TSP_FKEY] != 2u || p[0] > 24u || p[1] > 24u) return 0;
+    }
+    if (tsp_seen.at[TSP_HOLD]) {
+        if (tsp_seen.ver[TSP_HOLD] != 1u || tsp_seen.len[TSP_HOLD] != NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (raw[tsp_seen.at[TSP_HOLD] + k] > TESSERA_TRACKS) return 0;
+    }
+    if (tsp_seen.at[TSP_SPLIT]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_SPLIT];
+        if (tsp_seen.ver[TSP_SPLIT] != 1u || tsp_seen.len[TSP_SPLIT] != 2u * NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (p[k] > 100u || p[NTRK + k] >= TESS_SPLIT_HOWS) return 0;
+    }
+    if (tsp_seen.at[TSP_FMODE]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_FMODE];
+        if (tsp_seen.ver[TSP_FMODE] != 1u || tsp_seen.len[TSP_FMODE] != 2u * NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (p[k] >= TESS_FH_COUNT || p[NTRK + k] >= TESS_FR_COUNT) return 0;
+    }
+    if (tsp_seen.at[TSP_DMAP]) {
+        if (tsp_seen.ver[TSP_DMAP] != 1u || tsp_seen.len[TSP_DMAP] != NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (raw[tsp_seen.at[TSP_DMAP] + k] >= TESS_DM_COUNT) return 0;
+    }
+    if (tsp_seen.at[TSP_PGEN]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_PGEN];
+        if (tsp_seen.ver[TSP_PGEN] != 1u || tsp_seen.len[TSP_PGEN] != NTRK * (1u + NPAT * TESS_PG_BYTES)) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) {
+            if (p[k] > 1u) return 0;
+            for (uint32_t b = 0; b < NPAT && p[k]; b++)
+                if (!tessera_pg_check(k, p + NTRK + (k * NPAT + b) * TESS_PG_BYTES)) return 0;
+        }
+    }
+    if (tsp_seen.at[TSP_USCALE]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_USCALE];
+        if (tsp_seen.ver[TSP_USCALE] != 1u || tsp_seen.len[TSP_USCALE] != 1u + 2u * USCALE_SLOTS || !p[0] ||
+            p[0] > USCALE_SLOTS) return 0;
+        for (uint32_t k = 0; k < USCALE_SLOTS; k++) if (!uscale_ok(tsp_u16_at(p + 1u + 2u * k))) return 0;
+    }
+    if (tsp_seen.at[TSP_MHOLD] && (tsp_seen.ver[TSP_MHOLD] != 1u || tsp_seen.len[TSP_MHOLD] != 2u)) return 0;
+    if (tsp_seen.at[TSP_MVCA] && (tsp_seen.ver[TSP_MVCA] != 1u || tsp_seen.len[TSP_MVCA] != 2u)) return 0;
+    if (tsp_seen.at[TSP_MHCLK] && (tsp_seen.ver[TSP_MHCLK] != 1u || tsp_seen.len[TSP_MHCLK] != CORD_HCLK_BYTES)) return 0;
+    if (tsp_seen.at[TSP_MDEPTH] && (tsp_seen.ver[TSP_MDEPTH] != 1u || tsp_seen.len[TSP_MDEPTH] != 1u ||
+                                    raw[tsp_seen.at[TSP_MDEPTH]] > 100u)) return 0;
+    if (tsp_seen.at[TSP_BUS]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_BUS];
+        if (tsp_seen.ver[TSP_BUS] != 1u || tsp_seen.len[TSP_BUS] != 4u || p[0] >= CB_MODES || p[1] >= CB_LAGS ||
+            p[2] >= CB_MODES || p[3] >= CB_LAGS) return 0;
+    }
+    if (tsp_seen.at[TSP_SDIR]) {
+        if (tsp_seen.ver[TSP_SDIR] != 1u || tsp_seen.len[TSP_SDIR] != NTRK * NPAT) return 0;
+        for (uint32_t k = 0; k < NTRK * NPAT; k++) if (raw[tsp_seen.at[TSP_SDIR] + k] >= SEQ_DIRS) return 0;
+    }
+    if (tsp_seen.at[TSP_EORDER]) {
+        if (tsp_seen.ver[TSP_EORDER] != 1u || tsp_seen.len[TSP_EORDER] != NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (raw[tsp_seen.at[TSP_EORDER] + k] >= ET_ORDERS) return 0;
+    }
+    if (tsp_seen.at[TSP_STRUM]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_STRUM];
+        if (tsp_seen.ver[TSP_STRUM] != 1u || tsp_seen.len[TSP_STRUM] != 2u * NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (p[k] > TESS_STRUM_MS || p[NTRK + k] >= TESS_STR_DIRS) return 0;
+    }
+    if (tsp_seen.at[TSP_HUMAN]) {
+        if (tsp_seen.ver[TSP_HUMAN] != 1u || tsp_seen.len[TSP_HUMAN] != NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++) if (raw[tsp_seen.at[TSP_HUMAN] + k] > TESS_HUMAN_MS) return 0;
+    }
+    if (tsp_seen.at[TSP_ACC]) {
+        const uint8_t *p = raw + tsp_seen.at[TSP_ACC];
+        if (tsp_seen.ver[TSP_ACC] != 1u || tsp_seen.len[TSP_ACC] != 2u * NTRK) return 0;
+        for (uint32_t k = 0; k < NTRK; k++)
+            if (p[k] > TESS_ACC_LIMIT || p[NTRK + k] >= TESS_ACC_MODES) return 0;   /* (LIMIT 0: 7) */
+    }
+    if (tsp_seen.at[TSP_CORDS]) {
+        if (tsp_seen.ver[TSP_CORDS] != 1u || tsp_seen.len[TSP_CORDS] != CORD_PK_BYTES ||
+            !cord_check(raw + tsp_seen.at[TSP_CORDS])) return 0;
+    }
+    if (tsp_seen.at[TSP_CCN]) {
+        if (tsp_seen.ver[TSP_CCN] != 1u || tsp_seen.len[TSP_CCN] != CORD_MAX) return 0;
+        for (uint32_t i = 0; i < CORD_MAX; i++) if (raw[tsp_seen.at[TSP_CCN] + i] > 119u) return 0;
+    }
+    q->sum = proj_sum(q);
+    return proj_ok(q);
+}
+
+/* after tsp_valid of raw and project_restore_runtime of its project: the other patterns, the song's and motion's
+ * pattern tags, the generators and the cords (none in the record: OFF, none) */
+static void tsp_restore(const uint8_t *raw)
+{
+    uint32_t t, b, i, f = motion_guard();
+    chain_config = proj_scratch.chain;
+    memset(chain_patterns, 0, sizeof chain_patterns);
+    memset(motion_pattern, 0, sizeof motion_pattern);
+    if (tsp_seen.at[TSP_SONG]) memcpy(chain_patterns, raw + tsp_seen.at[TSP_SONG] + sizeof proj_scratch.chain, sizeof chain_patterns);
+    if (tsp_seen.at[TSP_MOTION]) memcpy(motion_pattern, raw + tsp_seen.at[TSP_MOTION] + sizeof proj_scratch.motion, sizeof motion_pattern);
+    for (t = 0; t < NTRK; t++) {
+        trk[t].pattern = proj_scratch.pattern[t]; trk[t].pattern_next = 0xff; trk[t].pattern_gen++;
+        for (b = 0; b < NPAT; b++) {
+            pattern_t *p = pattern_at(t, b);
+            for (i = 0; i < 4u; i++)
+                p->timing[i] = tsp_seen.at[TSP_TIMING] ? raw[tsp_seen.at[TSP_TIMING] + (t * NPAT + b) * 4u + i] : TP[P_SLEN + i].def;
+            if (b == trk[t].pattern) memcpy(p->step, trk[t].step, sizeof p->step);
+            else if (tsp_seen.at[TSP_STEPS])
+                for (i = 0; i < NSTEP; i++)
+                    tsp_step_unpack(&p->step[i], raw + tsp_seen.at[TSP_STEPS] + NTRK + ((t * NPAT + b) * NSTEP + i) * TSP_STEP_BYTES);
+        }
+    }
+    motion_unguard(f);
+    tessera_reset();                                   /* (generators OFF, no cords: a record without them) */
+    if (tsp_seen.at[TSP_TESSERA]) tessera_unpack_ver(raw[tsp_seen.at[TSP_TESSERA]], raw + tsp_seen.at[TSP_TESSERA] + 1u);
+    if (tsp_seen.at[TSP_CORDS]) (void)cord_unpack(raw + tsp_seen.at[TSP_CORDS]);
+    if (tsp_seen.at[TSP_MHOLD]) cord_hold_load(tsp_u16_at(raw + tsp_seen.at[TSP_MHOLD]));
+    if (tsp_seen.at[TSP_MHCLK]) cord_hold_clk_load(raw + tsp_seen.at[TSP_MHCLK]);   /* (after HOLD's mask) */
+    if (tsp_seen.at[TSP_MVCA]) cord_vca_load(tsp_u16_at(raw + tsp_seen.at[TSP_MVCA]));
+    if (tsp_seen.at[TSP_MDEPTH]) cord_mdepth_set(raw[tsp_seen.at[TSP_MDEPTH]]);   /* (none: cord_reset's 100) */
+    if (tsp_seen.at[TSP_BUS])                          /* (none: tessera_reset's SUM, OFF) */
+        for (uint32_t k = 0; k < 4u; k++) cord_bus_set(k, raw[tsp_seen.at[TSP_BUS] + k]);
+    if (tsp_seen.at[TSP_CCN])                          /* (saved before CC OUT: tessera_reset's 1 each) */
+        for (uint32_t i = 0; i < CORD_LIVE; i++) cord_cc_set(i, raw[tsp_seen.at[TSP_CCN] + i]);
+    if (tsp_seen.at[TSP_SUB]) memcpy(tessera.sub_shape, raw + tsp_seen.at[TSP_SUB], NTRK);
+    if (tsp_seen.at[TSP_MIDI]) memcpy(tessera.midi_ch, raw + tsp_seen.at[TSP_MIDI], NTRK);
+    if (tsp_seen.at[TSP_TRANSP])                       /* (saved before TRANSPOSE: tessera_reset's 0) */
+        for (uint32_t k = 0; k < TESSERA_TRACKS; k++)
+            tessera.midi_tr[k] = (int8_t)((int32_t)raw[tsp_seen.at[TSP_TRANSP] + k] - TESS_MIDI_TR);
+    if (tsp_seen.at[TSP_SOUND])                        /* (saved before SOUND: tessera_reset's ON) */
+        memcpy(tessera.sound_off, raw + tsp_seen.at[TSP_SOUND], TESSERA_TRACKS);
+    tessera.key_link = tsp_seen.at[TSP_KEY] ? raw[tsp_seen.at[TSP_KEY]] : 0u;   /* (saved before KEY LINK: OWN) */
+    if (tsp_seen.at[TSP_SEED]) {                       /* (saved before STEP as seed: tessera_reset's OFF, FREE) */
+        memcpy(tessera.sd_src, raw + tsp_seen.at[TSP_SEED], NTRK);
+        memcpy(tessera.sd_keep, raw + tsp_seen.at[TSP_SEED] + NTRK, NTRK);
+    }
+    if (tsp_seen.at[TSP_GRAV])                         /* (saved before GRAVITY: tessera_reset's 0) */
+        memcpy(tessera.sd_grav, raw + tsp_seen.at[TSP_GRAV], NTRK);
+    if (tsp_seen.at[TSP_HOW])                          /* (saved before HOW: tessera_reset's DRIFT) */
+        memcpy(tessera.sv_how, raw + tsp_seen.at[TSP_HOW], NTRK);
+    if (tsp_seen.at[TSP_ENERGY]) {                     /* (saved before part 2: tessera_reset's LEVEL 0, DEPTH 100) */
+        tessera.en_level = (int8_t)((int32_t)raw[tsp_seen.at[TSP_ENERGY]] - 100);
+        memcpy(tessera.en_depth, raw + tsp_seen.at[TSP_ENERGY] + 1, NTRK);
+    }
+    if (tsp_seen.at[TSP_DEV])                          /* (saved before DEVELOP: tessera_reset's 0, exact returns) */
+        memcpy(tessera.fm_dev, raw + tsp_seen.at[TSP_DEV], NTRK);
+    if (tsp_seen.at[TSP_CHAIN]) {                      /* (saved before form chaining: tessera_reset's OFF) */
+        const uint8_t *p = raw + tsp_seen.at[TSP_CHAIN];
+        tessera.fc_form = p[0]; tessera.fc_phrase = p[1]; tessera.fc_wander = p[2];
+        memcpy(tessera.fc_rep, p + 3, 4);
+        memcpy(tessera.fc_follow, p + 7, NTRK);
+        memcpy(tessera.fc_skip, p + 7 + NTRK, NTRK);
+    }
+    if (tsp_seen.at[TSP_ENTRY]) {                      /* (saved before Entries: tessera_reset's off) */
+        const uint8_t *p = raw + tsp_seen.at[TSP_ENTRY];
+        tessera.et_amount = p[0]; tessera.et_dwell = p[1]; tessera.et_style = p[2]; tessera.et_fade = p[3];
+        memcpy(tessera.et_role, p + 4, NTRK);
+    }
+    if (tsp_seen.at[TSP_PLAN]) {                       /* (saved before the planner: tessera_reset's FREE) */
+        const uint8_t *p = raw + tsp_seen.at[TSP_PLAN];
+        tessera.pl_length = p[0]; tessera.pl_shape = p[1]; tessera.pl_peak = p[2]; tessera.pl_count = p[3];
+        tessera.pl_end = p[4];
+        memcpy(tessera.pl_user, p + 5, 8);
+    }
+    if (tsp_seen.at[TSP_PERF]) memcpy(tessera.macro, raw + tsp_seen.at[TSP_PERF], 4);
+    else memset(tessera.macro, 0, 4);                  /* (none saved: 0) */
+    for (uint32_t k = 0; k < 2u; k++)                  /* (the CHAIN's KEY B / C; none saved: 0) */
+        tessera.fc_key[k] = (int8_t)(tsp_seen.at[TSP_FKEY] ? (int32_t)raw[tsp_seen.at[TSP_FKEY] + k] - 12 : 0);
+    if (tsp_seen.at[TSP_HOLD]) memcpy(tessera.follow_hold, raw + tsp_seen.at[TSP_HOLD], NTRK);
+    else memset(tessera.follow_hold, 0, sizeof tessera.follow_hold);   /* (saved before HOLD: OFF) */
+    if (tsp_seen.at[TSP_SPLIT]) {
+        memcpy(tessera.sub_split, raw + tsp_seen.at[TSP_SPLIT], NTRK);
+        memcpy(tessera.sub_split_how, raw + tsp_seen.at[TSP_SPLIT] + NTRK, NTRK);
+    } else {                                           /* (saved without it: off) */
+        memset(tessera.sub_split, 0, sizeof tessera.sub_split);
+        memset(tessera.sub_split_how, 0, sizeof tessera.sub_split_how);
+    }
+    if (tsp_seen.at[TSP_EORDER]) memcpy(tessera.et_order, raw + tsp_seen.at[TSP_EORDER], NTRK);
+    else memset(tessera.et_order, 0, sizeof tessera.et_order);   /* (saved before ORDER, or none set: AUTO) */
+    if (tsp_seen.at[TSP_STRUM]) memcpy(tessera.ch_strum, raw + tsp_seen.at[TSP_STRUM], 2u * NTRK);   /* (and ch_sdir) */
+    else memset(tessera.ch_strum, 0, 2u * NTRK);       /* (saved before STRUM, or none set: OFF, UP) */
+    if (tsp_seen.at[TSP_FMODE]) {
+        memcpy(tessera.follow_how, raw + tsp_seen.at[TSP_FMODE], NTRK);
+        memcpy(tessera.follow_rhy, raw + tsp_seen.at[TSP_FMODE] + NTRK, NTRK);
+    } else {                                           /* (saved without them: SAME, OWN) */
+        memset(tessera.follow_how, 0, sizeof tessera.follow_how);
+        memset(tessera.follow_rhy, 0, sizeof tessera.follow_rhy);
+    }
+    if (tsp_seen.at[TSP_PGEN]) {                       /* (saved without it: OFF, as before) */
+        memcpy(tessera.pat_gen, raw + tsp_seen.at[TSP_PGEN], NTRK);
+        for (uint32_t k = 0; k < NTRK; k++) tessera_pg_put(k, raw + tsp_seen.at[TSP_PGEN] + NTRK + k * NPAT * TESS_PG_BYTES);
+    } else memset(tessera.pat_gen, 0, sizeof tessera.pat_gen);
+    if (tsp_seen.at[TSP_SDIR]) memcpy(pattern_dir, raw + tsp_seen.at[TSP_SDIR], sizeof pattern_dir);
+    else memset(pattern_dir, 0, sizeof pattern_dir);   /* (saved without it: FWD, as before) */
+    if (tsp_seen.at[TSP_DMAP]) memcpy(tessera.midi_dmap, raw + tsp_seen.at[TSP_DMAP], NTRK);
+    else memset(tessera.midi_dmap, 0, sizeof tessera.midi_dmap);   /* (saved without it: GM, as before) */
+    memset(tessera.f_anchor, 0, sizeof tessera.f_anchor);
+    memset(tessera.hold_mem, 0, sizeof tessera.hold_mem);
+    tune_clear_all();                                  /* (the tunings are the project's; saved before them: none) */
+    if (tsp_seen.at[TSP_TUNE]) (void)tsp_tune_read(raw + tsp_seen.at[TSP_TUNE], tsp_seen.len[TSP_TUNE], 1);
+    uscale_sel = 0;                                    /* (saved without one: SCL's scale, the device's USER scales) */
+    if (tsp_seen.at[TSP_USCALE]) {                     /* (its USER scale and the other three, until power-off or a */
+        const uint8_t *p = raw + tsp_seen.at[TSP_USCALE];   /* settings save keeps them) */
+        for (uint32_t k = 0; k < USCALE_SLOTS; k++) uscale_mask[k] = (uint16_t)tsp_u16_at(p + 1u + 2u * k);
+        uscale_sel = p[0];
+    }
+    if (tsp_seen.at[TSP_ACC]) {
+        memcpy(tessera.acc_limit, raw + tsp_seen.at[TSP_ACC], NTRK);
+        memcpy(tessera.acc_mode, raw + tsp_seen.at[TSP_ACC] + NTRK, NTRK);
+    } else {                                           /* (saved before Accumulate: an octave, WRAP) */
+        memset(tessera.acc_limit, TESS_ACC_LIMIT_DEF, NTRK);
+        memset(tessera.acc_mode, TESS_ACC_WRAP, NTRK);
+    }
+    if (tsp_seen.at[TSP_HUMAN])
+        memcpy(tessera.sub_human, raw + tsp_seen.at[TSP_HUMAN], NTRK);
+    else                                               /* (saved before HUMAN TIME: TWEAK HUMAN timed a generator's
+                                                        * steps, up to 20 ms at 100; a STEP track's HUMAN did nothing) */
+        for (t = 0; t < TESSERA_TRACKS; t++) {
+            if (tessera.mode[t] == TESS_ENG_OFF) tessera.evolve[t].human = 0;
+            else tessera.sub_human[t] = (uint8_t)((tessera.evolve[t].human + 2u) / 5u);
+        }
+}
+
+/* a record's length as its header gives it (0: not a TSP1 record or one longer than TSP_MAX) */
+static uint32_t tsp_len(const uint8_t *raw)
+{
+    uint32_t magic, size;
+    memcpy(&magic, raw, 4); memcpy(&size, raw + 4, 4);
+    return magic == TSP_MAGIC && size >= TSP_HEAD + 4u && size <= TSP_MAX ? size : 0u;
+}
+/* after a record was changed in place: its checksum again */
+static void tsp_resum(uint8_t *raw)
+{
+    uint32_t len = tsp_len(raw), sum;
+    if (!len) return;
+    sum = proj_hash(raw, len - 4u);
+    memcpy(raw + len - 4u, &sum, 4);
+}
+
+/* raw (a valid record, len bytes) renamed in place: its NAME part rewritten and its checksum; 1 done */
+static int tsp_rename(uint8_t *raw, uint32_t len, const char *name)
+{
+    uint32_t n = str_len(name);
+    uint8_t given[PROJ_NAME_LEN];
+    char nm[PROJ_NAME_LEN + 1u];
+    if (!tsp_valid(raw, len) || !tsp_seen.at[TSP_NAME]) return 0;
+    memset(given, 0, sizeof given);
+    memcpy(given, name, n < PROJ_NAME_LEN ? n : PROJ_NAME_LEN);
+    memset(raw + tsp_seen.at[TSP_NAME], 0, PROJ_NAME_LEN);
+    memcpy(raw + tsp_seen.at[TSP_NAME], nm, proj_name_get(nm, given));   /* (upper case, as a save stores it) */
+    tsp_resum(raw);
+    return tsp_valid(raw, len);
+}

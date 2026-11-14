@@ -1,0 +1,237 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
+/* The real audio ISR with a simulated DMA and clock: overload must free work
+ * within one block without cutting another part's lead or bass. */
+#define main hostsim_main
+#include "hostsim.c"
+#undef main
+
+#define FM1_AUDIO_HALF 0x80u
+#define FM1_TICKS_PER_US 1u
+static uint32_t host_clock, host_us, host_half_reads, host_dma_advanced, host_acks, host_nest;
+static uint8_t host_pending;
+static volatile uint32_t t5_nested_ticks;              /* audio.c's: TIMER5 nested in the render (main.c) */
+static uint32_t fm1_ticks(void) { t5_nested_ticks = host_nest; host_clock += host_us; return host_clock; }
+static uint8_t fm1_audio_pending(void) { return host_pending; }
+static void fm1_audio_ack_aux(uint8_t p) { (void)p; }
+static uint32_t fm1_audio_free_half(void) { return host_dma_advanced && host_half_reads++ > 0u; }
+static void fm1_audio_ack_half(void) { host_acks++; }
+static void fm1_audio_init(int32_t *b, uint32_t n, void (*isr)(void), uint32_t p)
+{ (void)b; (void)n; (void)isr; (void)p; }
+void isr_alnk0(void) {}
+#include "../firmware/src/audio.c"
+
+static int bad;
+static void check(const char *what, int ok)
+{
+    printf("audio: %-74s %s\n", what, ok ? "ok" : "FAIL");
+    bad += !ok;
+}
+static void fresh(void)
+{
+    uint32_t p;
+    memset(trk, 0, sizeof trk);
+    memset(&song, 0, sizeof song);
+    memset(&chain, 0, sizeof chain);
+    host_tracks_init();
+    for (p = 0; p < NPART; p++) host_preset(&trk[p], HOST_SYNTH, HOST_PLAIN);
+    memset(&melodee_dbg, 0, sizeof melodee_dbg);
+    audio_cpu_rem = audio_halves = audio_max_us = 0;
+    shed_req = 0; shed_count = 0; shed_over = 0;
+    memset(shed_part, 0, sizeof shed_part);
+    memset(mix_quiet, 0, sizeof mix_quiet); memset(solo_gain, 0, sizeof solo_gain);
+    for (p = 0; p < NPART; p++) solo_gain[p] = 32768;
+    memset(voice_kills_part, 0, sizeof voice_kills_part);
+    host_clock = host_us = host_half_reads = host_dma_advanced = host_acks = host_nest = 0;
+    host_pending = FM1_AUDIO_HALF;
+    transport_req = panic_req = 0;
+}
+static voice_t *held(track_t *t, uint32_t note)
+{
+    uint32_t i;
+    for (i = 0; i < NVOICE; i++)
+        if (t->v[i].active && t->v[i].note == note) return &t->v[i];
+    return 0;
+}
+static uint32_t sounding(void)                  /* voices of all parts (voices_busy counts budget units) */
+{
+    uint32_t p, i, n = 0;
+    for (p = 0; p < NPART; p++)
+        for (i = 0; i < NVOICE; i++)
+            n += trk[p].v[i].active && trk[p].v[i].stage != 4u;
+    return n;
+}
+static void overload(void)
+{
+    voice_t *lead, *bass, *extra;
+    uint32_t mode, i;
+    int32_t out[2 * CTL];
+    fresh();
+    trk[0].p[P_VOICE] = V_MONO;
+    trk_note_on(&trk[0], 40, 100);
+    trk[1].p[P_VOICE] = V_POLY;
+    trk_note_on(&trk[1], 48, 100);
+    trk_note_on(&trk[1], 60, 100);
+    lead = held(&trk[0], 40); bass = held(&trk[1], 48); extra = held(&trk[1], 60);
+    shed_voice();
+    check("overload keeps each part's MONO lead and lowest POLY note",
+          lead && bass && extra && lead->gate && bass->gate && extra->stage == 4u && shed_count == 1u);
+    check("part diagnostics attribute the cut to its actual track",
+          shed_part[0] == 0u && shed_part[1] == 1u && voice_kills_part[0] == 0u && voice_kills_part[1] == 1u);
+    mix_block(out, CTL);
+    check("overload frees its victim within one control block", extra && !extra->active && sounding() == 2u);
+    shed_voice();
+    check("a lead alone on each part stays protected", lead->gate && bass->gate && shed_count == 1u);
+
+    fresh();
+    host_preset(&trk[0], ENGI_DRUM, 0);
+    trk_note_on(&trk[0], 36, 100); trk_note_on(&trk[0], 38, 100);
+    lead = held(&trk[0], 36); extra = held(&trk[0], 38);
+    shed_voice(); mix_block(out, CTL);
+    check("overload frees a held one-shot drum without waiting for its decay",
+          lead && extra && lead->active && !extra->active && sounding() == 1u);
+
+    fresh();
+    trk[0].p[P_VOICE] = V_UNISON;
+    trk_note_on(&trk[0], 55, 100);
+    shed_voice(); mix_block(out, CTL);
+    check("UNISON loses an extra voice and retains its lead", trk[0].v[0].active && trk[0].v[0].gate && sounding() == NPOLY - 1u);
+
+    for (mode = V_MONO; mode <= V_LEGATO; mode++) {
+        fresh(); trk[0].p[P_VOICE] = V_POLY;
+        for (i = 0; i < NPOLY; i++) trk_note_on(&trk[0], 48u + 2u * i, 100);
+        trk[0].p[P_VOICE] = (int16_t)mode;
+        shed_voice(); mix_block(out, CTL);
+        check("overload can reclaim stale POLY voices after a MONO / LEGATO change",
+              shed_count == 1u && trk[0].v[0].gate && sounding() == NPOLY - 1u);
+    }
+
+    fresh();
+    trk[0].p[P_VOICE] = V_POLY;
+    trk_note_on(&trk[0], 60, 100); trk_note_on(&trk[0], 64, 100);
+    lead = held(&trk[0], 60); extra = held(&trk[0], 64);
+    trk_note_off(&trk[0], 60); trk_note_off(&trk[0], 64);
+    lead->env = 10000; extra->env = 10;
+    shed_voice();
+    check("released voices shed the quieter tail first", extra->stage == 4u && lead->stage != 4u);
+}
+static void dma(void)
+{
+    uint32_t i, expected;
+    fresh();
+    host_pending = 0;
+    fm1_alnk0_irq();
+    check("an auxiliary interrupt does not render a DMA half", !host_acks && !audio_halves && !melodee_dbg.in_audio);
+    host_pending = FM1_AUDIO_HALF;
+    expected = HALF_FRAMES * 1000000u / FS;            /* the half's deadline in us */
+    host_us = expected * 85u / 100u;
+    fm1_alnk0_irq();
+    check("one half at 85 % records elapsed load but does not shed yet", host_acks == 1u && !shed_req && melodee_dbg.last_us == host_us && !melodee_dbg.late);
+    fm1_alnk0_irq();
+    check("a second half over 80 % in a row requests shedding", host_acks == 2u && shed_req);
+    shed_req = 0;
+    host_half_reads = 0; host_dma_advanced = 1; host_us = 100;
+    fm1_alnk0_irq();
+    check("DMA advancing during a render is counted once", host_acks == 3u && melodee_dbg.late == 1u && !melodee_dbg.in_audio && !shed_req);
+    fresh();
+    host_us = expected * 79u / 100u;
+    fm1_alnk0_irq(); fm1_alnk0_irq(); fm1_alnk0_irq();
+    check("halves under 80 % never shed", !shed_req);
+    host_us = expected * 93u / 100u;
+    fm1_alnk0_irq();
+    check("one half over 92 % requests shedding at once", shed_req);
+    fresh();
+    host_us = 5000;
+    fm1_alnk0_irq();
+    check("one half past the deadline requests shedding at once", shed_req);
+    fresh();
+    expected = HALF_FRAMES * 1000000u / FS;            /* the half's deadline in us */
+    host_us = expected * 90u / 100u; host_nest = expected * 30u / 100u;   /* the render 60 %, TIMER5 nested 30 % */
+    fm1_alnk0_irq(); fm1_alnk0_irq();
+    check("TIMER5 nested in the render counts toward the deadline", shed_req && melodee_dbg.last_us == host_us - host_nest);
+    fresh();
+    host_us = expected * 85u / 100u;
+    fm1_alnk0_irq(); host_us = 100; fm1_alnk0_irq(); host_us = expected * 85u / 100u; fm1_alnk0_irq();
+    check("slow halves that are not consecutive do not shed", !shed_req);
+    fresh();
+    host_us = 580;
+    for (i = 0; i < 512u; i++) fm1_alnk0_irq();
+    expected = host_us * 256u / (HALF_FRAMES * 1000000u / FS);
+    check("steady CPU load converges without integer smoothing bias", song.cpu_q8 >= expected - 1u && song.cpu_q8 <= expected);
+    fresh();
+    expected = HALF_FRAMES * 1000000u / FS;
+    host_us = expected / 2u; host_nest = expected / 4u;   /* the render 25 %, TIMER5 nested 25 % (#586) */
+    for (i = 0; i < 512u; i++) fm1_alnk0_irq();
+    check("the CPU meter counts TIMER5's nested USB service", song.cpu_q8 >= 126u && song.cpu_q8 <= 128u);
+    host_nest = 0;
+    host_us = expected;
+    fm1_alnk0_irq();
+    host_us = expected / 10u;
+    fm1_alnk0_irq();
+    check("one full half shows at once as the peak, not in the average", song.cpu_peak_q8 >= 250u && song.cpu_q8 < 140u);
+    for (i = 0; i < 300u; i++) fm1_alnk0_irq();
+    check("the peak falls back within a second", song.cpu_peak_q8 < 100u);
+}
+static void bench_output(void)
+{
+    int32_t out[CTL * 2]; uint32_t nonzero = 0;
+    fresh(); song.master_q12 = 2048;
+    trk_note_on(&trk[0], 60, 110);
+    uint32_t phase = trk[0].v[0].ph[0];
+    for (uint32_t block = 0; block < 8u; block++) {
+        audio_block(out, CTL);
+        for (uint32_t i = 0; i < CTL * 2u; i++) nonzero |= out[i] != 0;
+    }
+    check("output test still advances the active synth", trk[0].v[0].active && trk[0].v[0].ph[0] != phase);
+#if defined(MELODEE_BENCH_SILENT) && MELODEE_BENCH_SILENT
+    check("silent bench build zeros only the physical output", !nonzero);
+#else
+    check("normal build retains audible physical output", nonzero);
+#endif
+}
+static void unheard(void)
+{
+    int32_t out[2 * CTL];
+    uint32_t i, e, loud;
+    voice_t *a, *b;
+    fresh();
+    trk[0].p[P_VOICE] = V_POLY;
+    trk[0].p[P_LEVEL] = 0;
+    trk_note_on(&trk[0], 60, 100); trk_note_on(&trk[0], 64, 100);
+    a = held(&trk[0], 60); b = held(&trk[0], 64);
+    for (i = 0; i < 10u; i++) mix_block(out, CTL);
+    e = a ? a->ph[0] : 0;
+    mix_block(out, CTL);
+    check("LEVEL 0 for a moment still renders (a cord's passing zero)", a && a->ph[0] != e && mix_quiet[0] < MIX_QUIET);
+    for (i = 0; i < MIX_QUIET; i++) mix_block(out, CTL);
+    e = a->ph[0];
+    mix_block(out, CTL); mix_block(out, CTL);
+    check("a part at LEVEL 0 stops rendering: its held voice waits, still", a->active && a->gate && a->ph[0] == e);
+    trk_note_off(&trk[0], 64);
+    mix_block(out, CTL);
+    check("an unheard part's released voice ends at once", b && !b->active && a->active);
+    trk[0].p[P_LEVEL] = 100;
+    for (i = loud = 0; i < 8u; i++) {
+        mix_block(out, CTL);
+        for (e = 0; e < 2u * CTL; e++) loud |= out[e] != 0;
+    }
+    check("heard again, the held note goes on", a->active && a->env != 0 && loud && !mix_quiet[0]);
+    fresh();
+    trk_note_on(&trk[1], 60, 100);
+    a = held(&trk[1], 60);
+    trk[1].p[P_MUTE] = 1;                               /* (a muted part takes no new notes: one held) */
+    for (i = 0; i < MIX_QUIET + 8u; i++) mix_block(out, CTL);
+    e = a ? a->ph[0] : 0;
+    mix_block(out, CTL);
+    check("a MUTEd part stops rendering once faded out", a && a->active && a->ph[0] == e && mix_quiet[1] == MIX_QUIET);
+    trk[1].p[P_MUTE] = 0;
+    mix_block(out, CTL);
+    check("unMUTEd, it renders again", !mix_quiet[1] && solo_gain[1] > 0);
+}
+int main(void)
+{
+    setvbuf(stdout, NULL, _IONBF, 0);
+    overload(); unheard(); dma(); bench_output();
+    printf(bad ? "audio: %d FAILED\n" : "audio: all passed\n", bad);
+    return bad != 0;
+}

@@ -1,0 +1,11 @@
+{
+  "what": "Composing through systems on the FM-1. Thirteen generators, or your own steps, make parts that follow, answer and share one harmony. Sections, entries and a shape for the whole piece let a project unfold over minutes or hours. Play it by hand, or let it play.",
+  "author": "Theo Dainis (Rastapopolix)",
+  "kinds": [
+    "groove"
+  ],
+  "play": "https://rastapopolix.github.io/tessera/webapp/sim/",
+  "editor": "https://rastapopolix.github.io/tessera/webapp/editor/",
+  "cheat": "https://rastapopolix.github.io/tessera/cheatsheet/tessera-cheatsheet.pdf",
+  "image": "assets/hub-card.png"
+}

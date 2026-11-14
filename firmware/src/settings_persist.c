@@ -1,0 +1,193 @@
+#include "recording_preferences.h"
+#include "uscale.h"                              /* (the USER scales, kept here) */
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Kerem Kilic (Ellic Studio)
+ * Portions Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
+/* Shared PER5 layout: each feature updates only its own fields, preserving
+ * the other feature's saved preferences when either is built independently.
+ * PER5 keeps the compatible layout; boot validates the complete object before import. Its ext block:
+ * usb_off (the USB audio devices left out, USB AUDIO in the menu), boot (BOOT: 0 OFF, 1..4 the project power-on
+ * loads), glo (CLK TUNE MIDI ROUT as last used, GLO_KEPT: restored at power-on, a project load keeps them), drumch
+ * (GLO > SYSTEM DRUM: 0 channel 10, 1..16, 17 OFF), lights (the menu's LIGHTS: 0 MID, else OFF..FULL + 1); every
+ * field 0 = the default, so spare words can take new ones. spare[1] holds tagged A4 concert pitch (0 = 440 Hz).
+ * A saved template (project.c tmpl_t) follows the record.
+ * palette: UI_PAL_TAG + index (any other id: the default).
+ * favorites.factory[15][28]: tagged AUTOSAVE OFF; zero/unknown keeps autosave ON.
+ * favorites.factory[15][30] bits 5..6 MIDI OUT (0 KEYS, 1 ALL, 2 OFF), bit 7 CLOCK OUT (midi_out.c).
+ * favorites.factory[15][24] bit 4: MIDI CC IN OFF (midi_cc.c); zero keeps it ON. Bits 6..7: MENU MUTES (0 NOW).
+ * favorites.factory[15][25]: tagged TRACK KNOB LEFT (panel.c KNOB_SWAP_TAG); zero/unknown keeps it on the right.
+ * favorites.factory[8] bytes 4..7: 'U', 'V', 1, USB VOLUME 0..100 % (upstream's place); untagged = UA_VOLUME_DEFAULT.
+ * favorites.factory[8] bytes 8..15: the four USER scales (uscale.h), 16 bits each, low byte first; 0 (any value without
+ * the root, or above 12 bits) a slot never set: MAJ. Older firmware keeps them with the favorites, unread.
+ * favorites.factory[8][27]: tagged NOTE PREVIEW OFF (since 3.3); any other byte ON, so units that never chose get it
+ * ON. The old recording-preferences bit 6 is still written for older firmware, and no longer read.
+ * favorites.factory[8][29]: tagged GROUND LIGHT (Mono, gfx.c ux_ground; since 3.5); any other byte DARK. The palette id
+ * stays as it was, so older firmware keeps the ink (on black).
+ * bold: no longer used (one font weight); kept as it was saved, unless it holds the HOLD setting (panel.c). */
+typedef struct {
+    uint32_t magic, palette, lowcut, zoom;
+    panel_t panel;
+    uint32_t bold;
+    struct { uint8_t factory[16][32]; uint32_t user, filter; } favorites;
+    struct { uint32_t usb_off, boot; int16_t glo[4]; uint32_t drumch, lights, spare[2]; } ext;   /* drumch: 0 = 10,
+                                                                                                * 17 OFF; lights: 0 MID,
+                                                                                                * else level + 1 */
+} persist_t;
+#define PERSIST_MAGIC 0x50455235u
+_Static_assert(sizeof(((persist_t *)0)->ext) == 32u, "ext: 8 words, new fields take spare ones");
+_Static_assert(sizeof(persist_t) == 604u, "the record's layout: new settings take spare bytes (favorites.c)");
+
+static int16_t settings_glo[4];                     /* ext.glo: project.c GLO_KEPT (glo_restore, glo_poll) */
+#define USB_VOLUME_ROW 8u                           /* (favorites.c: GRAIN's retired row, past Felucca 1.0's stars) */
+#define USB_VOLUME_BYTE 4u
+#define USCALE_BYTE 8u                              /* (row USB_VOLUME_ROW: the USER scales, 2 bytes each) */
+#define RECORD_PREF_TAG 0x52500000u /* RP, high half of the old zoom word */
+#define A4_TAG 0x41340000u                          /* "A4": old spare contents are not tuning */
+#define AUTOSAVE_OFF_TAG 0xA1u                     /* CZ row byte 28: only this tag disables autosave */
+#define PREVIEW_OFF_TAG 0xB2u                      /* GRAIN row byte 27: only this tag turns NOTE PREVIEW off */
+#define GROUND_LIGHT_TAG 0xB5u                     /* GRAIN row byte 29: only this tag puts the screen on paper */
+/* Retired DIGITAL row, outside all live preset/settings bits. Kept by older
+ * Melodee builds along with the other favorites; no layout or magic change. */
+static const uint8_t SETTINGS_OWNER[4] = {'M', 'D', 'S', 1};
+static int settings_owned(const persist_t *p)
+{
+    return !memcmp(p->favorites.factory[1] + 28, SETTINGS_OWNER, sizeof SETTINGS_OWNER);
+}
+/* Legacy Melodee has no owner tag. Require its tagged palette and complete
+ * schema, then check the optional template in project.c before accepting it. */
+#define WORK_BUDGET_TAG 0x57420000u /* WB: high bits of usb_off; low two bits retain USB mode */
+static int settings_legacy_valid(const persist_t *p)
+{
+    uint32_t work = p->ext.usb_off, points = (work >> 8) & 255u;
+    int usb_ok = work <= 3u || ((work & 0xFFFF00FCu) == WORK_BUDGET_TAG && points >= 8u && points <= 32u);
+    return p->magic == PERSIST_MAGIC && palette_stored_ok(p->palette) &&
+        p->panel.magic == PANEL_MAGIC && p->lowcut <= 2u && (p->zoom & 0xFFu) <= 1u &&
+        (p->zoom <= 0xFFu || (p->zoom & 0xFFFF0000u) == RECORD_PREF_TAG) &&
+        hold_stored_ok(p->bold) && p->favorites.filter <= 1u && usb_ok &&
+        p->ext.boot <= 4u && p->ext.drumch <= 17u && p->ext.lights <= LIGHTS_N;
+}
+
+/* Normalize in place; 1 = read, 0 = invalid. */
+static int settings_import(persist_t *p, int n)
+{
+    if (n != (int)sizeof *p || p->magic != PERSIST_MAGIC) return 0;
+    uint32_t work=p->ext.usb_off,points=(work>>8)&255u;
+    settings_budget=(int16_t)(((work&0xffff0000u)==WORK_BUDGET_TAG && points>=8u && points<=32u)?points:VOICE_BUDGET_DEFAULT);
+    uint32_t mode = work <= 3u || (work & 0xFFFF00FCu) == WORK_BUDGET_TAG ? work & 3u : 0u;
+    p->ext.usb_off=mode|(settings_budget!=VOICE_BUDGET_DEFAULT?WORK_BUDGET_TAG|((uint32_t)settings_budget<<8):0u);
+    if (p->ext.boot > 4u)
+        p->ext.boot = 0;
+    settings_boot = (uint8_t)p->ext.boot;
+    if (p->ext.drumch > 17u)
+        p->ext.drumch = 0;
+    settings_drumch = (uint8_t)(p->ext.drumch == 17u || p->ext.drumch > 16u ? 0u : p->ext.drumch);   /* (0 or 17: OFF,
+                                                     * the default since 3.3.1: a drum track follows ROUT; 3.3 and
+                                                     * before read 0 as their default 10 and 17 as OFF) */
+    settings_lights = (uint8_t)(p->ext.lights && p->ext.lights <= LIGHTS_N ? p->ext.lights - 1u : LIGHTS_MID);
+    {
+        uint32_t hz = p->ext.spare[1] & 0xFFFFu;
+        tuning_a4 = (int16_t)((p->ext.spare[1] & 0xFFFF0000u) == A4_TAG && hz >= A4_MIN && hz <= A4_MAX
+                             ? hz : A4_DEFAULT);
+    }
+    memcpy(settings_glo, p->ext.glo, sizeof settings_glo);
+#if MELODEE_USB_AUDIO
+    uint8_t tracks = p->favorites.factory[15][26] == 0xA1u;
+    if (usb.up) ua_tracks_set(tracks, fm1_ms);    /* live backup restore: re-enumerate before changing stride */
+    else ua_tracks = ua_tracks_want = tracks;
+    ua_off = ua_off_want = (uint8_t)p->ext.usb_off;    /* (usb_start, after this, builds the configuration) */
+    {
+        const uint8_t *u = p->favorites.factory[USB_VOLUME_ROW] + USB_VOLUME_BYTE;
+        settings_usb_volume = u[0] == 'U' && u[1] == 'V' && u[2] == 1u && u[3] <= 100u ? u[3] : (uint8_t)UA_VOLUME_DEFAULT;
+    }
+#endif
+    p->palette = palette_to_stored(palette_from_stored(p->palette));
+    settings_screen=p->favorites.factory[15][27] < 8u ? p->favorites.factory[15][27] : 0u;
+    settings_autosave = p->favorites.factory[15][28] != AUTOSAVE_OFF_TAG;
+    settings_midi_out = (uint8_t)((p->favorites.factory[15][30] >> 5) & 3u) % MIDI_OUT_N;   /* (midi_out.c) */
+    settings_clock_out = (uint8_t)(p->favorites.factory[15][30] >> 7);
+    settings_cc_off = (uint8_t)((p->favorites.factory[15][24] >> 4) & 1u);   /* (midi_cc.c) */
+    settings_batt_off = (uint8_t)((p->favorites.factory[15][24] >> 5) & 1u);   /* (MENU BATTERY, core.h) */
+    settings_mute_q = (uint8_t)((p->favorites.factory[15][24] >> 6) % 3u);      /* (MENU MUTES; 3 unknown: NOW) */
+    settings_knob_swap = p->favorites.factory[15][25] == KNOB_SWAP_TAG;
+    settings.magic = SETTINGS_MAGIC;
+    settings.palette = palette_from_stored(p->palette);
+    settings.lowcut = 0;
+    settings.zoom = (p->zoom & 0xFFu) == 1u;
+    uint32_t rp = (p->zoom & 0xFFFF0000u) == RECORD_PREF_TAG ? (p->zoom >> 8) & 0xFFu : 0u;
+    settings_click = (uint8_t)((rp & 3u) < 3u ? rp & 3u : 0u);
+    uint32_t level = (rp >> 2) & 3u;
+    settings_click_level = (uint8_t)(level == 1u ? 0u : level == 2u ? 2u : 1u);
+    settings_countin = (uint8_t)(((rp >> 4) & 3u) < 3u ? (rp >> 4) & 3u : 0u);
+    for (uint32_t k = 0; k < USCALE_SLOTS; k++) {
+        const uint8_t *u = p->favorites.factory[USB_VOLUME_ROW] + USCALE_BYTE + 2u * k;
+        uint32_t m = u[0] | (uint32_t)u[1] << 8;
+        uscale_mask[k] = (uint16_t)(uscale_ok(m) ? m : USCALE_DEF);
+    }
+    settings_preview = p->favorites.factory[8][27] != PREVIEW_OFF_TAG;   /* (rp bit 6: older firmware's, not read) */
+#if MELODEE_LOOK
+    ux_ground = p->favorites.factory[8][29] == GROUND_LIGHT_TAG;
+#endif
+    settings_chord_add = (uint8_t)((rp >> 7) & 1u);
+    settings_hold = (uint8_t)hold_from_stored(p->bold);
+#ifdef MELODEE_FAVORITES
+    memcpy(&favorites, &p->favorites, sizeof favorites);
+    favorites_user_hi = p->ext.spare[0];
+    favorites.filter = favorites.filter == 1u;
+    favorites.factory[15][29] = 0;               /* LIST's category (browse.c list_lcat): a power-on starts on ALL, so
+                                                  * a category picked in the browser does not hide sounds for good */
+#endif
+    panel = p->panel.magic == PANEL_MAGIC ? p->panel : PANEL_DEFAULT;
+    return 1;
+}
+
+/* Start with the last imported/saved object, including fields owned by a
+ * feature absent from this build. Boot only writes for initialization or repair. */
+static void settings_export(persist_t *p)
+{
+    p->magic = PERSIST_MAGIC;
+    p->palette = palette_to_stored(settings.palette);
+    p->lowcut = 0;
+    uint32_t rp = settings_click % 3u | (settings_click_level == 0u ? 1u : settings_click_level == 2u ? 2u : 0u) << 2 |
+                  (settings_countin % 3u) << 4 | (settings_preview != 0u) << 6 | (settings_chord_add != 0u) << 7;
+    p->zoom = (settings.zoom & 0xFFu) | (rp ? RECORD_PREF_TAG | rp << 8 : 0u);
+    p->panel = panel;
+    p->bold = hold_to_stored(p->bold, settings_hold);
+#ifdef MELODEE_FAVORITES
+    memcpy(&p->favorites, &favorites, sizeof favorites);
+    p->ext.spare[0] = favorites_user_hi;
+#endif
+    memcpy(p->favorites.factory[1] + 28, SETTINGS_OWNER, sizeof SETTINGS_OWNER);
+#if MELODEE_USB_AUDIO
+    p->ext.usb_off = ua_off;
+    p->favorites.factory[15][26] = ua_tracks ? 0xA1u : 0u; /* tagged; old/unknown bytes default to stereo */
+    {
+        uint8_t *u = p->favorites.factory[USB_VOLUME_ROW] + USB_VOLUME_BYTE;
+        memset(u, 0, 4);
+        if (settings_usb_volume != UA_VOLUME_DEFAULT) {
+            u[0] = 'U'; u[1] = 'V'; u[2] = 1u; u[3] = settings_usb_volume > 100u ? 100u : settings_usb_volume;
+        }
+    }
+#endif
+    p->favorites.factory[15][27]=settings_screen;
+    p->favorites.factory[8][27] = settings_preview ? 0u : PREVIEW_OFF_TAG;
+#if MELODEE_LOOK
+    p->favorites.factory[8][29] = ux_ground ? GROUND_LIGHT_TAG : 0u;
+#endif
+    for (uint32_t k = 0; k < USCALE_SLOTS; k++) {
+        uint8_t *u = p->favorites.factory[USB_VOLUME_ROW] + USCALE_BYTE + 2u * k;
+        uint32_t m = uscale_mask[k] == USCALE_DEF ? 0u : uscale_mask[k];
+        u[0] = (uint8_t)m; u[1] = (uint8_t)(m >> 8);
+    }
+    p->favorites.factory[15][28] = settings_autosave ? 0u : AUTOSAVE_OFF_TAG;
+    p->favorites.factory[15][30] = (uint8_t)((p->favorites.factory[15][30] & 0x1Fu) | settings_midi_out << 5 |
+                                             (settings_clock_out != 0u) << 7);
+    p->favorites.factory[15][24] = (uint8_t)((p->favorites.factory[15][24] & ~0xF0u) | (settings_cc_off != 0u) << 4 |
+                                             (settings_batt_off != 0u) << 5 | (settings_mute_q % 3u) << 6);
+    p->favorites.factory[15][25] = settings_knob_swap ? KNOB_SWAP_TAG : 0u;
+    p->ext.usb_off=(p->ext.usb_off&3u)|(settings_budget!=VOICE_BUDGET_DEFAULT?WORK_BUDGET_TAG|((uint32_t)settings_budget<<8):0u);
+    p->ext.boot = settings_boot;
+    p->ext.drumch = settings_drumch;                  /* (OFF 0; 10 now written as 10, so older firmware reads it too) */
+    p->ext.lights = settings_lights == LIGHTS_MID ? 0u : settings_lights + 1u;
+    p->ext.spare[1] = tuning_a4 == A4_DEFAULT ? 0u : A4_TAG | (uint32_t)tuning_a4;
+    memcpy(p->ext.glo, settings_glo, sizeof settings_glo);
+}

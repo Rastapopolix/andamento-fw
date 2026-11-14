@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
+"""Make the site (GitHub Pages):
+
+  index.html                        the project page (web/home/index.html, the release filled in; the installer
+                                    stays at webapp/installer/)
+  media/gallery/, media/brand/      its pictures: assets/gallery (tests/gallery_render.c), assets/brand (tools/gen_brand.py)
+  media/video/                      the demo video and its poster: assets/video (tools/demo_video.py)
+  firmware/tessera-VER.fwsc    the package, both cores (+ LICENSE, LICENSING.md, LICENSES/: the
+                                    packages hold JieLi SDK files under Apache-2.0, see LICENSING.md)
+  firmware/tessera-VER-1core.fwsc the same release built with MELODEE_DUAL_CORE=0, for FM-1s that crash
+                                    with the dual-core build; the installer offers both
+  firmware/tessera-X.Y-betaN*.fwsc  the beta (beta.json; publish_beta.py): the next update, both cores, for anyone to try
+                                    before its release; dropped by the release it leads to (X.Y or later)
+  firmware/melodee-nightly*.fwsc    next's development builds (nightly.json; publish_nightly.py), kept as published
+  firmware/melodee-synth*.fwsc      the synth-only firmware, both cores (synth.json; publish_synth.py: the
+                                    synth-only branch, one track, no sequencer), kept as published; optional
+  webapp/synth-editor/              the synth-only branch's editor (publish_synth.py), kept as published
+  webapp/installer/index.html       index_pkg.html, self-contained (fm1pkg.js, fm1ota.js, metadata inlined)
+  webapp/editor/index.html          editor.html (+ fukiai.ttf, FUKIAI-LICENSE.txt, fm1backup.js, demos/*.tsp)
+  webapp/editor-beta/               the beta's editor, the same files from the beta's own web/ and demos/ (its Demo
+                                    projects hold the CHK test projects); goes with the beta
+  webapp/sim-beta/                  the beta's web simulator (web/sim/build.sh --release X.Y-betaN, publish_beta.py
+                                    --sim), when given; goes with the beta; both simulators offer the other
+  words/                            the screen reader's words files (web/words: tools/gen_words.py), every one ever
+                                    made: a device points the reader at its own, so none is changed or dropped
+  webapp/sim/                       the web simulator (web/sim/build.sh: build/sim/), when given; else kept as published
+  src/                              not touched
+
+  web/make_site.py build/tessera-X.Y.fwsc build/tessera-X.Y-1core.fwsc X.Y OUT_DIR [build/sim]
+
+The packages must be ones made by tools/fm1pkg_make.py (Melodee's own loader, no vendor files), from one
+release: their identity (FM-1_8XY from 3.3, FM-1_8377XYYZ 2.0.1..3.3-beta1, FM-1_9 and two to four digits before) is
+read from them and must be the same; the device must report it after the install.
+"""
+import json
+import re
+import shutil
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+BLOCKS, BLK, KEEP = 20, 0x30, 0x2F
+
+
+def strip_module(src):
+    src = re.sub(r"^export\s+", "", src, flags=re.M)
+    return re.sub(r"^import .*?;\n", "", src, flags=re.M)
+
+
+# Tessera's identities: FM-1_8XY from 3.3 (M-UPGRADE 3.11 takes a name, "_" and 1 to 3 digits only), FM-1_8377XYYZ
+# 2.0.1..3.3-beta1, FM-1_9... (Melodee's numbering) before. A published older release stays publishable.
+TESSERA_ID = r"FM-1_8\d\d|FM-1_8377\d{4}|FM-1_9\d{2,4}"
+
+
+def product_of(raw):
+    """the package identity: one marker byte after each of the first 20 blocks (fm1pkg.js productOf)"""
+    return "".join(chr((m - i - 1) & 0xFF) for i in range(BLOCKS) if (m := raw[i * BLK + KEEP]) != 0x7D)
+
+
+def check_package(pkg):
+    """the package's bytes and identity; refuses anything that is not a Melodee package"""
+    raw = pkg.read_bytes()
+    product = product_of(raw)
+    if not re.fullmatch(TESSERA_ID, product):
+        raise SystemExit(f"{pkg}: identity {product!r} is not a Tessera package (FM-1_8 and two digits; before 3.3 "
+                         "FM-1_8377 and four digits, before 2.0.1 FM-1_9 and two to four)")
+    if b"FELUCCA-LOADER-1" not in raw:              # Melodee loader marker: never publish a package with vendor files
+        raise SystemExit(f"{pkg}: no Melodee loader in it; the site ships only fm1pkg_make.py packages "
+                         "(a package patched from an official one carries vendor files)")
+    return raw, product
+
+
+def release_packages(out):
+    """a published site's release: its version and its two packages' paths (publish_nightly.py, publish_synth.py)"""
+    out = Path(out)
+    manifest = out / "firmware/release.json"
+    if manifest.exists():
+        release = json.loads(manifest.read_text())
+    else:  # Existing sites predate the release manifest.
+        html = (out / "webapp/installer/index.html").read_text()
+        match = re.search(r"^const meta = (\{.*\});$", html, re.M)
+        if not match:
+            raise SystemExit("Pages installer has no release metadata")
+        release = json.loads(match[1])
+    return release["version"], {k: out / "firmware" / Path(v).name for k, v in release["pkg"].items()}
+
+
+def published(out, name):
+    """a channel the site already carries (firmware/NAME.json), its packages where they are; None without one"""
+    path = out / "firmware" / f"{name}.json"
+    if not path.exists():
+        return None
+    spec = json.loads(path.read_text())
+    spec["pkg"] = {k: str(out / "firmware" / Path(v).name) for k, v in spec["pkg"].items()}
+    if set(spec["pkg"]) != {"dual", "single"}:      # an older manifest (the 320 MHz variant): until the next run
+        return None
+    return spec
+
+
+def channel(spec, label, stem, branch):
+    """a development channel's two packages (dual and single core) from one commit: {key: (path, bytes, identity,
+    published name)} and the installer's metadata"""
+    if not re.fullmatch(r"[0-9a-f]{40}", spec["commit"]):
+        raise SystemExit(f"{label} commit must be a full Git SHA")
+    files = {}
+    for key, suffix in (("dual", ""), ("single", "-1core")):
+        path = Path(spec["pkg"][key])
+        data, identity = check_package(path)
+        files[key] = (path, data, identity, f"{stem}{suffix}.fwsc")
+    if files["dual"][2] != files["single"][2]:
+        raise SystemExit(f"{label} variants must have the same package identity")
+    if files["dual"][1] == files["single"][1]:
+        raise SystemExit(f"{label} variants must be distinct builds")
+    meta = {"version": spec["version"], "product": files["dual"][2], "branch": branch, "commit": spec["commit"],
+            "builtAt": spec["builtAt"], "pkg": {k: "../../firmware/" + f[3] for k, f in files.items()}}
+    if spec.get("notes"):                           # (a beta's: what is new, docs/BETA_NOTES.md, publish_beta.py)
+        meta["notes"] = spec["notes"]
+    if spec.get("sim"):                             # (a beta's simulator, webapp/sim-beta/: publish_beta.py --sim)
+        meta["sim"] = spec["sim"]
+    return files, meta
+
+
+def copy_editor(ed):
+    """this checkout's editor into ed: editor.html, its font and fm1backup.js, and the demo projects for its Demo
+    projects (demos/*.tsp, demos/checks/*.tsp: the test projects)"""
+    ed.mkdir(parents=True, exist_ok=True)
+    shutil.copy(HERE / "editor.html", ed / "index.html")
+    for f in ("fukiai.ttf", "FUKIAI-LICENSE.txt", "fm1backup.js"):
+        if (HERE / f).exists():
+            shutil.copy(HERE / f, ed / f)
+    for sub in ("", "checks"):
+        (ed / "demos" / sub).mkdir(parents=True, exist_ok=True)
+        for f in sorted((HERE.parent / "demos" / sub).glob("*.tsp")):
+            shutil.copy(f, ed / "demos" / sub / f.name)
+
+
+def copy_sim(sim, dest, version=None):
+    """web/sim/build.sh's output (index.html, worklet.js, melodee.wasm) into dest; with version, it must be that
+    build (web/sim/build.sh --release VERSION: the page says Tessera vVERSION)"""
+    sim = Path(sim)
+    if not (sim / "melodee.wasm").exists():
+        raise SystemExit(f"{sim}: no melodee.wasm (web/sim/build.sh)")
+    if version and f"Tessera v{version.lower()}" not in (sim / "index.html").read_text(encoding="utf-8"):
+        raise SystemExit(f"{sim}: not the {version} simulator (web/sim/build.sh --release {version})")
+    dest.mkdir(parents=True, exist_ok=True)
+    for f in ("index.html", "worklet.js", "melodee.wasm"):
+        shutil.copy(sim / f, dest / f)
+
+
+def version_key(version):
+    """X.Y[.Z][-suffix] -> (X, Y, Z): the release a version is or leads to"""
+    m = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", version)
+    if not m:
+        raise SystemExit(f"version {version!r}: use X.Y[.Z][-suffix]")
+    return tuple(int(n or 0) for n in m.groups())
+
+
+def main(pkg, single, version, out, nightly=None, installer_only=False, synth=None, sim=None, beta=None, beta_sim=None):
+    """beta: the beta ({pkg: {dual, single}, version X.Y[.Z]-betaN, commit, builtAt}); None keeps what the site has,
+    False drops it. A beta whose release is out (X.Y[.Z] at or before this release's) is dropped too. synth: the synth-only firmware ({pkg: {dual, single}, version, commit, builtAt, web}: web, the synth-only
+    branch's web/ for its editor); None keeps what the site has. sim: web/sim/build.sh's output (build/sim); None
+    keeps what the site has. beta_sim: the beta's simulator (web/sim/build.sh --release, its version), to
+    webapp/sim-beta/ with a beta published now; a beta published without one, or none, drops the old one"""
+    pkg, single, out = Path(pkg), Path(single), Path(out)
+    raw, product = check_package(pkg)
+    raw1, product1 = check_package(single)
+    if product1 != product:
+        raise SystemExit(f"{single}: identity {product1}, {pkg} is {product}: build both from one release")
+    if raw1 == raw:
+        raise SystemExit(f"{single} is {pkg}: the single-core package is built with MELODEE_DUAL_CORE=0")
+    beta_editor = bool(beta)                        # (a beta published now: its editor is this checkout's)
+    if beta is None:
+        beta = published(out, "beta")
+    if beta and version_key(beta["version"]) <= version_key(version):
+        beta = None                                 # (its release is out: the beta is over)
+    if beta and not re.fullmatch(r"\d+\.\d+(\.\d+)?-[A-Za-z0-9]+", beta["version"]):
+        raise SystemExit(f"beta version {beta['version']!r}: use X.Y[.Z]-suffix, e.g. 3.3-beta1")
+    beta_files, beta_meta = channel(beta, "beta", "tessera-" + beta["version"], "develop") if beta else ({}, None)
+    if beta_meta:
+        beta_meta["editor"] = "../editor-beta/"
+    if nightly is None:
+        nightly = published(out, "nightly")
+    nightly_files, nightly_meta = channel(nightly, "nightly", "melodee-nightly", "next") if nightly else ({}, None)
+    if synth is None:
+        synth = published(out, "synth")
+    synth_files, synth_meta = channel(synth, "synth", "melodee-synth", "synth-only") if synth else ({}, None)
+    if synth_meta:
+        synth_meta["editor"] = "../synth-editor/"
+    html = (HERE / "index_pkg.html").read_text(encoding="utf-8")
+    lib = strip_module((HERE / "fm1pkg.js").read_text(encoding="utf-8")) + "\n" + \
+        strip_module((HERE / "fm1ota.js").read_text(encoding="utf-8")) + "\n" + \
+        strip_module((HERE / "fm1backup.js").read_text(encoding="utf-8"))
+    v = re.sub(r'[^A-Za-z0-9.-]', '-', version)
+    name, name1 = f"tessera-{v}.fwsc", f"tessera-{v}-1core.fwsc"
+    release_meta = {"version": version, "product": product,
+                    "pkg": {"dual": "../../firmware/" + name, "single": "../../firmware/" + name1}}
+    meta = json.dumps({**release_meta, "beta": beta_meta, "nightly": nightly_meta, "synth": synth_meta})
+    for mark in ("/*LIB*/", "/*META*/"):
+        if html.count(mark) != 1:
+            raise SystemExit(f"index_pkg.html must contain {mark} once; update make_site.py")
+    html = html.replace("/*LIB*/", lib).replace("/*META*/", meta)
+    inst, ed, fw = out / "webapp" / "installer", out / "webapp" / "editor", out / "firmware"
+    for d in (inst, ed, fw):
+        d.mkdir(parents=True, exist_ok=True)
+    keep = {name, name1, "melodee-nightly.fwsc", "melodee-nightly-1core.fwsc", "melodee-synth.fwsc",
+            "melodee-synth-1core.fwsc", *(f[3] for f in beta_files.values())}
+    for old in [*fw.glob("melodee-*.fwsc"), *fw.glob("tessera-*.fwsc")]:   # (melodee-tess-*: the releases before 2.0)
+        if old.name not in keep:
+            old.unlink()
+    (inst / "index.html").write_text(html, encoding="utf-8")
+    for src, dest in ((pkg, fw / name), (single, fw / name1)):
+        if src.resolve() != dest.resolve():
+            shutil.copy(src, dest)
+    (fw / "release.json").write_text(json.dumps(release_meta, indent=2) + "\n")
+    if not beta_meta and (fw / "beta.json").exists():
+        (fw / "beta.json").unlink()
+    for files, chan, label in ((beta_files, beta_meta, "beta"), (nightly_files, nightly_meta, "nightly"),
+                               (synth_files, synth_meta, "synth")):
+        if chan:
+            for path, data, identity, filename in files.values():
+                (fw / filename).write_bytes(data)
+            (fw / f"{label}.json").write_text(json.dumps(chan, indent=2) + "\n")
+    if synth and synth.get("web"):                  # the synth-only branch's editor (its protocol: one track, FX)
+        web, sed = Path(synth["web"]), out / "webapp" / "synth-editor"
+        sed.mkdir(parents=True, exist_ok=True)
+        shutil.copy(web / "editor.html", sed / "index.html")
+        for f in ("fukiai.ttf", "FUKIAI-LICENSE.txt", "fm1backup.js"):
+            shutil.copy(web / f, sed / f)
+    lic = HERE.parent / "LICENSES"                  # the packages hold JieLi SDK files (Apache-2.0): their
+    (fw / "LICENSES").mkdir(exist_ok=True)          # licence travels next to it, with Melodee's own
+    names = sorted(f.name for f in lic.glob("*.txt"))
+    for n in names:
+        shutil.copy(lic / n, fw / "LICENSES" / n)
+    (fw / "LICENSES" / "index.html").write_text(    # the installer links this folder: Pages lists no folders
+        '<!doctype html><meta charset="utf-8"><title>Melodee licences</title><h1>Licence texts</h1><ul>'
+        + "".join(f'<li><a href="{n}">{n}</a></li>' for n in names)
+        + '</ul><p><a href="../LICENSING.md">LICENSING.md</a> · <a href="../LICENSE">LICENSE (GPL-3.0)</a></p>\n',
+        encoding="utf-8")
+    for doc in ("LICENSE", "LICENSING.md"):
+        shutil.copy(HERE.parent / doc, fw / doc)
+    (out / "words").mkdir(exist_ok=True)            # the screen reader's words (a beta's too): added, never removed
+    for f in (HERE / "words").glob("*.json"):
+        shutil.copy(f, out / "words" / f.name)
+    if not installer_only:
+        copy_editor(ed)
+    bed = out / "webapp" / "editor-beta"
+    if beta_meta and beta_editor:
+        copy_editor(bed)
+    elif not beta_meta and bed.exists():
+        shutil.rmtree(bed)
+    bsim = out / "webapp" / "sim-beta"
+    if beta_meta and beta_sim:
+        copy_sim(beta_sim, bsim, beta_meta["version"])
+    elif bsim.exists() and (not beta_meta or beta_editor):   # (no beta, or a new one without its simulator)
+        shutil.rmtree(bsim)
+    if not installer_only:                          # the project page, its screens and the brand pictures
+        home = (HERE / "home" / "index.html").read_text(encoding="utf-8")
+        for mark in ("@VERSION@", "@FWSC@", "@FWSC1@"):
+            if mark not in home:
+                raise SystemExit(f"web/home/index.html has no {mark}; update make_site.py")
+        home = home.replace("@VERSION@", version).replace("@FWSC1@", name1).replace("@FWSC@", name)
+        (out / "index.html").write_text(home, encoding="utf-8")
+        for src, dest in ((HERE.parent / "assets/gallery", out / "media/gallery"),
+                          (HERE.parent / "assets/brand", out / "media/brand"),
+                          (HERE.parent / "assets/video", out / "media/video")):
+            dest.mkdir(parents=True, exist_ok=True)
+            for f in src.iterdir():
+                if f.suffix in (".png", ".svg", ".mp4", ".jpg"):
+                    shutil.copy(f, dest / f.name)
+    if sim and not installer_only:
+        copy_sim(sim, out / "webapp" / "sim")
+    print(f"site: {out}: webapp/installer ({len(html)} B), webapp/editor, firmware/{name} ({len(raw)} B) and "
+          f"{name1} ({len(raw1)} B), {product}" + (f"; beta {beta_meta['version']}" if beta_meta else "") +
+          (f"; synth {synth_meta['version']}" if synth_meta else ""))
+
+
+if __name__ == "__main__":
+    if len(sys.argv) not in (5, 6):
+        sys.exit(__doc__)
+    main(*sys.argv[1:5], sim=sys.argv[5] if len(sys.argv) == 6 else None)

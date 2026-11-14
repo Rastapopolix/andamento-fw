@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
+"""The UI palettes (run by tools/build.py generate()).
+
+  gen_ui_palettes.py OUT.h [--report]
+
+Palettes: NIGHT (warm ink) and CONTRAST (black and white), Melodee's grounds; SMALTI (the default: lapis and gold
+mosaic glass), MARMO (marble) and VITRO (glass), Tessera's. Melodee's DAY is gone; its stored slot stays retired.
+Every track colour is Tessera's own: the tool fails on one near Melodee's (MELODEE_TRACKS). A palette is BG
+(background), SURF (surface: cards, dialogs, menu rows), TEXT, ACCENT (the one active thing: hot knob, cursor,
+playhead) and four track colours: the selected track's is THEME (values, curves, gauges, selection), so the screen
+takes the colour of the track ALGORITHM picks (src/gfx.c palette_track). The firmware derives the rest with fixed
+blends (src/gfx.c, the same integer maths as mix() here):
+  MID  = mix(BG, TEXT, 84 %)    labels, units, secondary text
+  DIM  = mix(BG, TEXT, 56 %)    inactive, empty steps, disabled
+  LINE = mix(BG, TEXT, 18 %)    1 px dividers, the faint gauge track (NIGHT: 10 %, the design's #2E2939; LINE_PCT)
+  SEL  = mix(BG, THEME, 80 %)   selection fill and gauge fill
+  TINT = mix(BG, THEME, 12 %)   a faint area (the selected drum lane)
+  RAISE = mix(SURF, TEXT, 12 %) a raised area on a surface: stubs, guides, slots, chips, button wells
+  KEY  = mix(BG, TEXT, 78 %)    a keycap's fill
+  INK  = BG: text on a selection or THEME fill
+Outside the palette: REC, a fixed red; the QR code's fixed black and white; the crash screen's fixed red.
+GRAY (pure grayscale, R = G = B in every colour and tint) is compiled into the host tests only (UI_TEST_PALETTE):
+every screen drawn in it must stay gray, which proves the drawing takes every colour from the tokens.
+GROUND LIGHT (the Mono look): each Mono palette's light version, its inks from LIGHT_INKS on paper (LIGHT_BG); checked
+with MONO_CHECKS as the dark ones, and a MOSAIC's four light inks must all differ.
+Saved settings name palettes by a tagged id (PAL_TAG + slot, SLOTS); any other id reads as the default.
+--report prints the WCAG contrast of every pairing, with each track colour as THEME. The tool fails on any miss.
+"""
+import argparse
+import sys
+from pathlib import Path
+
+# name, bg, surf, text, accent, (track 1, 2, 3, 4) (8-bit RGB; stored as RGB565)
+PALETTES = [
+    ("NIGHT",    (23, 20, 31),    (36, 32, 46),    (243, 238, 248), (255, 255, 255),
+     ((232, 216, 92), (60, 200, 232), (236, 104, 220), (170, 222, 92))),
+    ("CONTRAST", (0, 0, 0),       (34, 34, 34),    (255, 255, 255), (255, 255, 255),
+     ((255, 250, 120), (0, 214, 255), (255, 90, 255), (140, 255, 90))),
+    ("SMALTI",   (13, 19, 38),    (24, 33, 60),    (246, 240, 224), (255, 226, 150),     # Tessera's: lapis and gold
+     ((222, 202, 96), (64, 200, 214), (110, 214, 104), (214, 124, 236))),
+    ("MARMO",    (21, 19, 17),    (36, 33, 30),    (240, 233, 218), (255, 250, 240),     # marble
+     ((132, 204, 112), (214, 194, 104), (204, 132, 208), (130, 178, 226))),
+    ("VITRO",    (8, 25, 30),     (17, 41, 47),    (232, 244, 242), (255, 255, 255),     # glass
+     ((62, 210, 222), (250, 232, 100), (236, 120, 236), (170, 222, 92))),
+]
+# The Mono look (MELODEE_LOOK 1): one ink on black, the Settings' COLOR its ink (Theo 2026-10-28: yellow as the yellow
+# OLED of early norns units by default; white, green, blue, red; 2026-10-29: orange, pink and hot pink, the FM-1's
+# shells, and lilac, the lavender shell's). Its track colours are the ink (one ink: no track colours, so
+# Melodee's are not near any); its own slots, so a detailed build's stored id reads as Mono's default and back
+MONO_INK = [("YELLOW", (255, 208, 32)), ("WHITE", (240, 240, 240)), ("GREEN", (96, 255, 128)),
+            ("BLUE", (136, 192, 255)), ("RED", (255, 112, 100)), ("ORANGE", (255, 144, 40)),
+            ("PINK", (255, 176, 216)), ("HOT PINK", (255, 88, 176)), ("LILAC", (192, 150, 255))]
+MONO_PALETTES = [(n, (0, 0, 0), (20, 20, 20), c, c, (c, c, c, c)) for n, c in MONO_INK]
+# MOSAIC (Theo 2026-10-30, after a user's wish for more colour): each track its own ink, the selected track's the
+# screen's (src/gfx.c palette_theme: TEXT follows THEME when the track colours differ), the selected value white (ACCENT)
+_INK = dict(MONO_INK)
+MONO_PALETTES.append(("MOSAIC", (0, 0, 0), (20, 20, 20), _INK["YELLOW"], _INK["WHITE"],
+                      (_INK["YELLOW"], _INK["BLUE"], _INK["HOT PINK"], _INK["GREEN"])))
+# SUNSET, OCEAN and NEON (Theo 2026-11-05, after a viewer's wish for more like MOSAIC): the same, other inks. NEON is the
+# bold one: its magenta lifted to (255, 90, 230), as a full (255, 40, 200) reads 6.4:1 on black, under MONO_CHECKS' 7
+for _n, _t in (("SUNSET", ((255, 144, 40), _INK["HOT PINK"], _INK["LILAC"], _INK["YELLOW"])),
+               ("OCEAN", (_INK["BLUE"], (64, 224, 208), _INK["GREEN"], _INK["LILAC"])),
+               ("NEON", ((0, 230, 255), (255, 90, 230), (180, 255, 0), (255, 140, 0)))):
+    MONO_PALETTES.append((_n, (0, 0, 0), (20, 20, 20), _t[0], _INK["WHITE"], _t))
+# MENU > GROUND LIGHT (#557, Theo 2026-11-10): the chosen palette's light version, dark inks on warm paper. A few light
+# inks shared by the nine (each dark enough for MONO_CHECKS' 7:1 on paper); a MOSAIC's four tracks each their own, its
+# ACCENT CHARCOAL. SUNSET's yellow would collide with its orange (both SEPIA): CHARCOAL takes its place. WHITE on paper
+# is pure BLACK, and COLOR names it so (Theo's device test, beta5); RED and HOT PINK look nearly like PINK on paper, and
+# ORANGE like YELLOW (both SEPIA), so COLOR shows only PINK and YELLOW there (LIGHT_AS: a saved RED, HOT PINK or ORANGE
+# is shown and drawn as the one it stands for, and is itself again on DARK)
+LIGHT_BG, LIGHT_SURF = (236, 232, 220), (222, 217, 203)
+LIGHT_INKS = [("CHARCOAL", (34, 34, 34)), ("SEPIA", (100, 60, 8)), ("FOREST", (16, 84, 34)), ("NAVY", (30, 50, 140)),
+              ("CRIMSON", (140, 16, 46)), ("PLUM", (100, 40, 130)), ("TEAL", (0, 80, 84)), ("BLACK", (0, 0, 0))]
+LIGHT_ONE = {"WHITE": "BLACK", "YELLOW": "SEPIA", "ORANGE": "SEPIA", "GREEN": "FOREST", "BLUE": "NAVY",
+             "RED": "CRIMSON", "PINK": "CRIMSON", "HOT PINK": "CRIMSON", "LILAC": "PLUM"}
+LIGHT_MOSAIC = {"MOSAIC": ("SEPIA", "NAVY", "CRIMSON", "FOREST"), "SUNSET": ("SEPIA", "CRIMSON", "PLUM", "CHARCOAL"),
+                "OCEAN": ("NAVY", "TEAL", "FOREST", "PLUM"), "NEON": ("TEAL", "PLUM", "FOREST", "SEPIA")}
+LIGHT_ACCENT = "CHARCOAL"                # a MOSAIC's selected value (dark: white)
+LIGHT_AS = {"RED": "PINK", "HOT PINK": "PINK", "ORANGE": "YELLOW"}   # COLOR on LIGHT: these hidden, shown (and drawn) as that one
+LIGHT_RENAME = ("WHITE", "BLACK")        # COLOR on LIGHT names this ink so
+
+
+def light_names(p):
+    """palette p's light inks: tracks 1..4, then ACCENT"""
+    if p[0] in LIGHT_MOSAIC:
+        return LIGHT_MOSAIC[p[0]] + (LIGHT_ACCENT,)
+    return (LIGHT_ONE[p[0]],) * 5
+
+
+def light_pal(p):
+    """palette p on paper, as a palette row"""
+    c = dict(LIGHT_INKS)
+    n = light_names(p)
+    return (p[0], LIGHT_BG, LIGHT_SURF, c[n[0]], c[n[4]], tuple(c[x] for x in n[:4]))
+
+
+MONO_SLOTS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+MONO_DEFAULT = "YELLOW"
+SLOTS = [0, 2, 3, 4, 5]            # each palette's stored slot; 1 was DAY (retired: its stored id reads as the default)
+# Melodee's own track colours (NIGHT, DAY, CONTRAST as upstream had them): no track colour may come near one
+MELODEE_TRACKS = [(255, 122, 92), (255, 193, 69), (70, 217, 176), (157, 140, 255),
+                  (160, 42, 22), (116, 68, 0), (0, 92, 72), (78, 56, 184),
+                  (255, 128, 96), (255, 214, 0), (0, 236, 188), (176, 160, 255)]
+MELODEE_DE = 20                    # the least CIELAB distance (dE76) from each of them
+DEFAULT = "SMALTI"                 # a fresh install's (and an unknown stored id's); NIGHT stays index 0 for saved ids
+TEST_GRAY = ("GRAY", (14, 14, 14), (36, 36, 36), (204, 204, 204), (255, 255, 255),
+             ((232, 232, 232), (220, 220, 220), (208, 208, 208), (244, 244, 244)))
+PAL_TAG = 96                       # stored id = PAL_TAG + slot (ids below: earlier firmware, read as the default)
+REC_DARK, REC_LIGHT = (255, 72, 72), (190, 24, 40)
+QR_LIGHT, QR_DARK, CRASH_BG, CRASH_INK = (255, 255, 255), (0, 0, 0), (160, 0, 0), (255, 255, 255)
+PCT = {"MID": 84, "DIM": 56, "LINE": 18, "SEL": 80, "TINT": 12, "KEY": 78}
+RAISE_PCT = 12                     # SURF -> TEXT
+LINE_PCT = {"NIGHT": 10}           # a palette's own LINE (else PCT["LINE"]): NIGHT's dividers as faint as the design's
+
+
+def to565(c):
+    r, g, b = c
+    if r == g == b:                     # a gray stays on the RGB565 gray axis (G = 2 R)
+        return ((r >> 3) << 11) | ((r >> 3) << 6) | (r >> 3)
+    return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+
+
+def from565(v):
+    return ((v >> 11) * 255 // 31, ((v >> 5) & 63) * 255 // 63, (v & 31) * 255 // 31)
+
+
+def cdiv(a, b):
+    return a // b if a >= 0 else -((-a) // b)
+
+
+def mix(a, b, pct, mono=False):
+    """src/gfx.c ux_mix: a + (b - a) * pct / 100 per channel, rounded; MONO on the 5-bit red channel"""
+    if mono:
+        x, y = a >> 11, b >> 11
+        d = (y - x) * pct
+        v = x + cdiv(d + (50 if d >= 0 else -50), 100)
+        return (v << 11) | (v << 6) | v
+    out = 0
+    for sh, mask in ((11, 31), (5, 63), (0, 31)):
+        x, y = (a >> sh) & mask, (b >> sh) & mask
+        d = (y - x) * pct
+        out |= (x + cdiv(d + (50 if d >= 0 else -50), 100)) << sh
+    return out
+
+
+def luma(c):
+    """src/gfx.c ux_luma: 0..255, integer"""
+    r, g, b = c >> 11, (c >> 5) & 63, c & 31
+    return (r * 255 // 31 * 54 + g * 255 // 63 * 183 + b * 255 // 31 * 19) >> 8
+
+
+def lum(c565):
+    def lin(v):
+        v /= 255.0
+        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = from565(c565)
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+
+
+def contrast(a, b):
+    la, lb = lum(a), lum(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def lab(c):
+    """8-bit RGB -> CIELAB (D65)"""
+    def lin(v):
+        v /= 255.0
+        return v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+    r, g, b = (lin(v) for v in c)
+    x, y, z = ((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047, 0.2126 * r + 0.7152 * g + 0.0722 * b,
+               (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883)
+    f = [t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116 for t in (x, y, z)]
+    return 116 * f[1] - 16, 500 * (f[0] - f[1]), 200 * (f[1] - f[2])
+
+
+def delta_e(a, b):
+    return sum((p - q) ** 2 for p, q in zip(lab(a), lab(b))) ** 0.5
+
+
+def derive(p, t):
+    """the derived colours of palette p with track t's colour as THEME"""
+    name, bg, surf, text, accent, trk = p
+    bg, surf, text, accent, theme = to565(bg), to565(surf), to565(text), to565(accent), to565(trk[t])
+    mono = name == "GRAY"
+    d = dict(bg=bg, surf=surf, text=text, theme=theme, accent=accent,
+             mid=mix(bg, text, PCT["MID"], mono), dim=mix(bg, text, PCT["DIM"], mono),
+             line=mix(bg, text, LINE_PCT.get(name, PCT["LINE"]), mono), sel=mix(bg, theme, PCT["SEL"], mono),
+             tint=mix(bg, theme, PCT["TINT"], mono), raise_=mix(surf, text, RAISE_PCT, mono),
+             key=mix(bg, text, PCT["KEY"], mono))
+    d["ink"] = bg
+    d["light"] = luma(bg) > 128
+    d["rec"] = accent if mono else to565(REC_LIGHT if d["light"] else REC_DARK)
+    return f"{name}/T{t + 1}", d
+
+
+# (foreground, background, minimum contrast, why)
+CHECKS = [("text", "bg", 12.0, "body text"), ("text", "surf", 9.0, "body text on a surface"),
+          ("mid", "bg", 5.0, "labels"), ("mid", "surf", 4.0, "labels on a surface"),
+          ("dim", "bg", 2.2, "inactive (not read)"), ("line", "bg", 1.25, "1 px dividers"),
+          ("theme", "bg", 4.5, "values, curves"), ("theme", "surf", 4.5, "values on a surface"),
+          ("accent", "bg", 4.5, "hot value, cursor, playhead"), ("accent", "surf", 4.5, "hot on a surface"),
+          ("ink", "sel", 4.5, "text on a selection"), ("ink", "theme", 4.5, "text on a THEME fill"),
+          ("sel", "bg", 1.8, "gauge fill vs track"), ("rec", "bg", 3.0, "REC (graphic)"),
+          ("text", "raise_", 7.0, "text on a RAISE chip or button"), ("ink", "rec", 4.5, "text on the REC chip"),
+          ("ink", "key", 4.5, "a keycap's label"), ("key", "bg", 3.0, "a keycap on the background"),
+          ("key", "surf", 2.5, "a keycap on a surface"), ("ink", "dim", 1.8, "an unavailable keycap's label"),
+          ("ink", "accent", 4.5, "text on the ARM badge")]
+
+# the Mono look's inks (WCAG AAA for its text: 7:1)
+MONO_CHECKS = [("text", "bg", 7.0, "text"), ("mid", "bg", 4.5, "labels"), ("dim", "bg", 2.2, "inactive (not read)"),
+               ("ink", "text", 7.0, "inverted text"), ("text", "surf", 6.0, "text on a surface")]
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("out", nargs="?")
+    ap.add_argument("--report", action="store_true")
+    a = ap.parse_args()
+    fails = []
+    assert PALETTES[0][0] == "NIGHT" and len(PALETTES) <= 31
+    assert len(SLOTS) == len(PALETTES) and SLOTS == sorted(set(SLOTS)) and SLOTS[0] == 0 and SLOTS[-1] < 31
+    for p in PALETTES:
+        for t, c in enumerate(p[5]):
+            m = min(MELODEE_TRACKS, key=lambda q: delta_e(c, q))
+            if delta_e(c, m) < MELODEE_DE:
+                fails.append(f"{p[0]}/T{t + 1}: {c} is Melodee's {m} (dE {delta_e(c, m):.1f} < {MELODEE_DE})")
+    assert len(MONO_SLOTS) == len(MONO_PALETTES) and MONO_SLOTS[0] > SLOTS[-1] and MONO_SLOTS[-1] < 31
+    # MENU > COLOR's sheet (ui_menu.c menu_mono): one row of nine one-ink boxes, one row of four MOSAIC tiles, inks first
+    _multi = [p[5][0] != p[5][1] for p in MONO_PALETTES]
+    assert _multi.count(False) <= 9 and _multi.count(True) <= 4 and _multi == sorted(_multi)
+    rows = [derive(p, t) for p in PALETTES + [TEST_GRAY] for t in range(4)]
+    mono_rows = [derive(p, 0) for p in MONO_PALETTES if p[5][0] == p[5][1]]
+    for p in MONO_PALETTES:                  # MOSAIC: each track's colour as the ink, and the white of the selection
+        if p[5][0] != p[5][1]:
+            mono_rows += [derive((p[0],) + p[1:3] + (c, c, p[5]), t) for t, c in enumerate(p[5])]
+            mono_rows.append(derive((f"{p[0]}/SEL",) + p[1:3] + (p[4], p[4], p[5]), 0))
+    for name, d in rows:
+        if name.startswith("GRAY"):
+            for k, v in d.items():
+                if k == "light":
+                    continue
+                if not (v >> 11 == v & 31 and ((v >> 5) & 63) == (v >> 11) << 1):
+                    fails.append(f"GRAY is not grayscale: {k} = {v:#06x}")
+        for f, b, lim, why in CHECKS:
+            c = contrast(d[f], d[b])
+            if c < lim:
+                fails.append(f"{name}: {f}/{b} {c:.2f} < {lim} ({why})")
+    _mn = [p[0] for p in MONO_PALETTES]
+    for a_, b_ in LIGHT_AS.items():          # a hidden ink: a one-ink palette, drawn exactly as the one shown for it
+        pa, pb = MONO_PALETTES[_mn.index(a_)], MONO_PALETTES[_mn.index(b_)]
+        assert pa[5][0] == pa[5][1] and b_ not in LIGHT_AS and light_names(pa) == light_names(pb), a_
+    assert LIGHT_RENAME[0] in _mn and LIGHT_RENAME[0] not in LIGHT_AS
+    for p in MONO_PALETTES:                  # GROUND LIGHT: the same checks on paper, a MOSAIC's four all different
+        lp = light_pal(p)
+        if p[5][0] != p[5][1]:
+            if len(set(lp[5])) != 4:
+                fails.append(f"{p[0]}/LIGHT: its four light inks are not all different: {light_names(p)[:4]}")
+            mono_rows += [derive((f"{p[0]}/L",) + lp[1:3] + (c, c, lp[5]), t) for t, c in enumerate(lp[5])]
+            mono_rows.append(derive((f"{p[0]}/L/SEL",) + lp[1:3] + (lp[4], lp[4], lp[5]), 0))
+        else:
+            mono_rows.append(derive((f"{p[0]}/L",) + lp[1:], 0))
+    for name, d in mono_rows:                # one ink on black (or paper): its text, labels and inverted text (ink on BG fills)
+        for f, b, lim, why in MONO_CHECKS:
+            c = contrast(d[f], d[b])
+            if c < lim:
+                fails.append(f"{name}: {f}/{b} {c:.2f} < {lim} ({why})")
+    if a.report:
+        print(f"{'palette':12s} " + " ".join(f"{f}/{b}".ljust(12) for f, b, _, _ in CHECKS))
+        for name, d in rows:
+            print(f"{name:12s} " + " ".join(f"{contrast(d[f], d[b]):5.1f}".ljust(12) for f, b, _, _ in CHECKS))
+        print("minimum      " + " ".join(f"{lim:<12.2f}" for _, _, lim, _ in CHECKS))
+        print(f"{'Mono ink':12s} " + " ".join(f"{f}/{b}".ljust(12) for f, b, _, _ in MONO_CHECKS))
+        for name, d in mono_rows:
+            print(f"{name:12s} " + " ".join(f"{contrast(d[f], d[b]):5.1f}".ljust(12) for f, b, _, _ in MONO_CHECKS))
+    if a.out:
+        names = [p[0] for p in PALETTES]
+
+        def row(p):
+            v = [to565(c) for c in p[1:5]]
+            t = [to565(c) for c in p[5]]
+            return (f'    {{"{p[0]}", ' + ", ".join(f"0x{x:04x}" for x in v) +
+                    ", {" + ", ".join(f"0x{x:04x}" for x in t) + "}},")
+        out = ["/* generated by tools/gen_ui_palettes.py: the UI palettes (4 colours and 4 track colours each, the rest",
+               " * derived) */", "#pragma once", "#include <stdint.h>", "",
+               "/* ui_pal_t {name, bg, surf, text, accent, trk[4]} (src/gfx.c); GRAY: host tests only */",
+               "static const ui_pal_t UI_PALETTES[] = {"]
+        mono_names = [p[0] for p in MONO_PALETTES]
+
+        def table(pals, slots, default, nms):
+            t = [row(p) for p in pals]
+            t += ["#ifdef UI_TEST_PALETTE", row(TEST_GRAY), "#endif", "};",
+                  f"#define UI_NPALETTES {len(pals)}u", f"#define UI_DEFAULT_INDEX {nms.index(default)}u      /* {default} */",
+                  f"#define UI_GRAY_INDEX {len(pals)}u      /* (UI_TEST_PALETTE only) */",
+                  "static const uint8_t UI_PAL_SLOTS[] = {" + ", ".join(str(x) for x in slots) + "};",
+                  "/* each palette's LINE (BG -> TEXT %), in UI_PALETTES' order */",
+                  "static const uint8_t UI_LINE_PCTS[] = {" +
+                  ", ".join(str(LINE_PCT.get(p[0], PCT["LINE"])) for p in pals) + ",",
+                  "#ifdef UI_TEST_PALETTE", f"    {LINE_PCT.get(TEST_GRAY[0], PCT['LINE'])},", "#endif", "};"]
+            return t
+        out = out[:-1] + ["#if MELODEE_LOOK                /* the Mono look: COLOR is its ink on black */",
+                          "static const ui_pal_t UI_PALETTES[] = {"] + table(MONO_PALETTES, MONO_SLOTS, MONO_DEFAULT, mono_names)
+        _li = [x[0] for x in LIGHT_INKS]
+        assert len(_li) <= 8
+        out += ["/* GROUND LIGHT (src/gfx.c palette_set): paper, and each palette's light inks (UI_LIGHT_INKS' index for",
+                " * track j in bits 3j .. 3j + 2, ACCENT's in bits 12 .. 14; TEXT is track 1's) */",
+                f"#define UI_LIGHT_BG 0x{to565(LIGHT_BG):04x}u", f"#define UI_LIGHT_SURF 0x{to565(LIGHT_SURF):04x}u",
+                "static const uint16_t UI_LIGHT_INKS[] = {" + ", ".join(f"0x{to565(c):04x}" for _, c in LIGHT_INKS) +
+                "};   /* " + " ".join(_li) + " */",
+                "static const uint16_t UI_LIGHT_MAP[] = {" +
+                ", ".join(f"0x{sum(_li.index(n) << 3 * j for j, n in enumerate(light_names(p))):04x}"
+                          for p in MONO_PALETTES) + "};",
+                "/* COLOR on LIGHT: the ink each is shown as (itself, or the one that stands for it: hidden), and the",
+                " * one renamed */",
+                "static const uint8_t UI_LIGHT_AS[] = {" +
+                ", ".join(str(mono_names.index(LIGHT_AS.get(n, n))) for n in mono_names) + "};",
+                f"#define UI_LIGHT_RENAME_I {mono_names.index(LIGHT_RENAME[0])}u      /* {LIGHT_RENAME[0]} */",
+                f'#define UI_LIGHT_RENAME "{LIGHT_RENAME[1]}"']
+        out += ["#else", "static const ui_pal_t UI_PALETTES[] = {"] + table(PALETTES, SLOTS, DEFAULT, names) + ["#endif"]
+        out += [f"#define UI_PAL_TAG {PAL_TAG}u          /* stored id = UI_PAL_TAG + UI_PAL_SLOTS[index] */"]
+        out += [f"#define UI_{k}_PCT {v}" for k, v in PCT.items()] + [f"#define UI_RAISE_PCT {RAISE_PCT}   /* SURF -> TEXT */"]
+        out += [f"#define UI_REC_DARK 0x{to565(REC_DARK):04x}u", f"#define UI_REC_LIGHT 0x{to565(REC_LIGHT):04x}u",
+                f"#define UI_QR_LIGHT 0x{to565(QR_LIGHT):04x}u", f"#define UI_QR_DARK 0x{to565(QR_DARK):04x}u",
+                f"#define UI_CRASH_BG 0x{to565(CRASH_BG):04x}u", f"#define UI_CRASH_INK 0x{to565(CRASH_INK):04x}u", ""]
+        Path(a.out).write_text("\n".join(out))
+    for f in fails:
+        print("FAIL", f)
+    if fails:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

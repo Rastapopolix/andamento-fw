@@ -1,0 +1,708 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
+/* The firmware editor handler, USB framing and UART recovery against RAM flash.
+ * Build with the generated tables and the same flags as hostsim.c. */
+static unsigned char host_samples[3][0x14000];
+#define SMP_USER_XIP(k) host_samples[k]
+#define MELODEE_OTA 1
+#define MELODEE_FLASH 0
+#define MELODEE_VERSION "TEST"
+#define main hostsim_main
+#include "hostsim.c"
+#undef main
+
+static uint32_t host_progress = 1, host_erases, host_writes;
+static uint8_t host_wire[8192];
+static uint32_t host_wire_n;
+static void host_drain(void)
+{
+    while (so_r != so_w) {
+        uint32_t p = sx_out_q[so_r++ % SXQ], cin = p & 15u, i;
+        uint32_t n = cin == 4u || cin == 7u ? 3u : cin == 6u ? 2u : 1u;
+        for (i = 0; i < n && host_wire_n < sizeof host_wire; i++)
+            host_wire[host_wire_n++] = (uint8_t)(p >> (8u * (i + 1u)));
+    }
+}
+static uint32_t ota_now_ms(void) { return fm1_ms; }
+static void ota_idle(void) { host_drain(); fm1_ms++; }
+static void fm1_wdt_feed(void)
+{
+    fm1_ms++;
+    if (host_progress && transport_req == 2u) { seq_stop(); transport_req = 0; }
+}
+static void fm1_irq_off(void) {}
+static void fm1_irq_on(void) {}
+static int32_t fm1_enc_take(uint32_t e) { (void)e; return 0; }
+static void lcd_sync(void) {}
+static void lcd_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t c) { (void)x; (void)y; (void)w; (void)h; (void)c; }
+static void lcd_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint16_t *p)
+{ (void)x; (void)y; (void)w; (void)h; (void)p; }
+#include "../firmware/src/gfx.c"
+#include "../firmware/src/panel.c"
+#include "../firmware/src/ui.c"
+static void panel_setup(void) {}
+#include "../firmware/src/upreset.c"
+#include "../firmware/src/project.c"
+
+static uint32_t flash_ok = 1;
+static void audio_silence(void) {}
+static void fl_inval(uint32_t off, uint32_t n) { (void)off; (void)n; }
+static uint8_t *host_flash_ptr(uint32_t off) { return &host_samples[0][0] + off - 0xA0000u; }
+static int fl_erase4k(uint32_t off, uint32_t *took)
+{
+    memset(host_flash_ptr(off), 0xFF, 4096); *took = 0; host_erases++; return 0;
+}
+static int fl_write(uint32_t off, const void *p, uint32_t n)
+{
+    memcpy(host_flash_ptr(off), p, n); host_writes++; return 0;
+}
+static int st_read(uint32_t off, void *p, uint32_t n) { (void)off; (void)p; (void)n; return -1; }
+static int st_prog(uint32_t off, const void *p, uint32_t n) { (void)off; (void)p; (void)n; return -1; }
+static int st_erase(uint32_t off) { (void)off; return -1; }
+#include "../firmware/src/storage.c"
+#include "../firmware/src/editor.c"
+
+static int check(const char *what, int ok)
+{
+    printf("editor: %-70s %s\n", what, ok ? "ok" : "FAIL");
+    return !ok;
+}
+static void reset(void)
+{
+    uint32_t t, i;
+    memset(&song, 0, sizeof song); memset(trk, 0, sizeof trk);
+    memset(&chain, 0, sizeof chain); chain_defaults(&chain_config);
+    pattern_init();
+    memset(&sx_import,0,sizeof sx_import);memset(&bulk,0,sizeof bulk);resource_release(RES_NOTE_HISTORY);note_transaction_ptr=0;fm6_rx_ready=0;
+    memset(&ed_w, 0, sizeof ed_w); memset(&ui, 0, sizeof ui);
+    memset(&favorites, 0, sizeof favorites); memset(&settings, 0, sizeof settings); settings_init();
+    memset(proj_bank_len, 0, sizeof proj_bank_len); up_cache_reset(); native_cache_reset();
+    memset(&um, 0, sizeof um);
+    host_progress = 1; host_erases = host_writes = host_wire_n = 0;
+    transport_req = panic_req = 0; sx_ready = sx_collect = sx_busy = 0;
+    so_r = so_w = mi_r = mi_w = 0; midi_in_overflow = 0; usb.config = 1;
+    for (i = 0; i < G_COUNT; i++) song.g[i] = GP[i].def;
+    for (t = 0; t < NTRK; t++) {
+        track_defaults(&trk[t]); set_engine_of(&trk[t], 6); apply_preset_to(&trk[t], 0);   /* (TRIO: values on p[]) */
+        trk[t].engine = trk[t].eng_req; track_defaults_steps(&trk[t]);
+    }
+}
+static uint32_t request(uint32_t cmd, const uint8_t *a, uint32_t n)
+{
+    uint32_t i;
+    host_wire_n = 0; ota_frame_done();
+    sysex_byte(0xF0); sysex_byte(ED_HDR0); sysex_byte(ED_HDR1); sysex_byte(ED_HDR2); sysex_byte((uint8_t)cmd);
+    for (i = 0; i < n; i++) sysex_byte(a[i]);
+    sysex_byte(0xF7); ed_service(); host_drain();
+    return host_wire_n;
+}
+static uint32_t pack7(const uint8_t *p, uint32_t n, uint8_t *a)
+{
+    uint32_t o = 0, i;
+    while (n) {
+        uint32_t k = n > 7u ? 7u : n, m = o++;
+        a[m] = 0;
+        for (i = 0; i < k; i++, n--) { a[m] |= (*p >> 7) << i; a[o++] = *p++ & 127u; }
+    }
+    return o;
+}
+
+static int preferences(void)
+{
+    int bad = 0;
+    uint8_t a[4] = {0, 2, 0, 0};
+    reset();
+    uint32_t n = request(ED_INFO, a, 0) - 4u;           /* (the user tunings' tag last: user_tunings) */
+    bad += check("INFO explicitly tags display capabilities after SONG without changing command 33",
+        ED_SONG == 33 && ED_UI_STATE == 34 && ED_FAV_SET == 38 &&
+        host_wire[n - 35] == 0 && host_wire[n - 34] == 0x55 &&
+        host_wire[n - 33] == 1 && host_wire[n - 32] == 57 &&
+        host_wire[n - 31] == 0x4d && host_wire[n - 30] == 2 &&
+        host_wire[n - 29] == MOTION_MAX && host_wire[n - 28] == 1 &&
+        host_wire[n - 27] == 0x42 && host_wire[n - 26] == 1 && host_wire[n - 25] == 3 &&
+        host_wire[n - 24] == 0x50 && host_wire[n - 23] == 1 && host_wire[n - 22] == NPAT && host_wire[n - 21] == CHAIN_ROWS &&
+        host_wire[n - 20] == 0x46 && host_wire[n - 19] == 1 && host_wire[n - 18] == FM6_NFAC &&
+        host_wire[n - 17] == 0 && host_wire[n-16]==0x35 && host_wire[n-15]==1 && host_wire[n-14]==0 && host_wire[n-13]==16 && host_wire[n-12]==17 && host_wire[n-11]==18 && host_wire[n-10]==20 && host_wire[n-9]==0 && host_wire[n-8]==1 && host_wire[n-7]==0x4e && host_wire[n-6]==1 && host_wire[n-5]==64 && host_wire[n-4]==0 && host_wire[n-3]==0 && host_wire[n-2]==0);   /* (no CZ-1 pool) */
+    request(ED_UI_SET, a, 2);
+    bad += check("UI_SET updates the actual palette and reports RAM-only saving",
+        host_wire[5] == 3 && settings.palette == 2 && T_BG == UI_PALETTES[2].bg);
+    a[1] = NPALETTES; request(ED_UI_SET, a, 2);
+    bad += check("out-of-range palette leaves the display unchanged", host_wire[5] == 1 && settings.palette == 2);
+    a[0] = 1; a[1] = 1; request(ED_UI_SET, a, 2);
+    bad += check("the retired font weight is not supported (rc 2), UI_STATE says 127",
+        host_wire[5] == 2 && host_wire[8] == 57 && host_wire[10] == 127);
+    a[0] = 9; request(ED_UI_SET, a, 2);
+    bad += check("retired FX latch cannot be enabled", host_wire[5] == 2);
+    a[0] = 2; request(ED_UI_SET, a, 2);
+    bad += check("unsupported preference is reported without applying it", host_wire[5] == 2);
+    a[0] = ENGI_DRUM; a[1] = 0; a[2] = 64; a[3] = 1;
+    request(ED_FAV_SET, a, 4);
+    bad += check("FAV_SET marks DRUM as a normal engine", host_wire[5] == 3 && favorite_has(ENGI_DRUM, 0));
+    request(ED_FAV_GET, a, 4);
+    bad += check("FAV_GET reads the bounded favorite range", host_wire[5] == 0 && host_wire[10] == 1);
+    a[0] = USER_GENERAL; a[1] = 31; request(ED_FAV_SET, a, 4);
+    bad += check("empty user slot cannot be starred", host_wire[5] == 1 && !favorite_has(USER_GENERAL, 31));
+    up_store(31, "Saved"); request(ED_FAV_SET, a, 4);
+    bad += check("saved user slot can be starred without changing its sound", host_wire[5] == 3 && favorite_has(USER_GENERAL, 31));
+    a[1] = UP_SLOTS - 1; a[3] = 32; request(ED_FAV_GET, a, 4);
+    bad += check("favorite range cannot cross the end of user slots", host_wire[5] == 1);
+    request(ED_FAV_SET, a, 3);
+    bad += check("short favorite writes return an error without reading absent bytes", host_wire[5] == 1);
+    bad += check("UI_STATE rejects unexpected request bytes", request(ED_UI_STATE, a, 1) == 0);
+    a[0] = 0; request(ED_SONG, a, 1);
+    bad += check("SONG still responds through its original command", host_wire_n > 6 && host_wire[4] == 33 && host_wire[5] == 0);
+    {
+        uint8_t before_state[32];
+        up_store(63, "UPPER FAVORITE");
+        uint32_t nstate = request(ED_UI_STATE, a, 0);
+        memcpy(before_state, host_wire, nstate);
+        favorite_set(USER_GENERAL, 63, !favorite_has(USER_GENERAL, 63));
+        request(ED_UI_STATE, a, 0);
+        bad += check("upper-slot favorites change the editor synchronization signature", memcmp(before_state, host_wire, nstate) != 0);
+    }
+    return bad;
+}
+
+static int framing(void)
+{
+    uint32_t i, bad = 0;
+    static const uint8_t rt[] = {0xF0, 0x7D, 0xF8, 0x46, 0xFE, 0x4C, ED_PING, 0xFF, 0xF7};
+    static const uint8_t aborted[] = {0xF0, 0x7D, 0x46, 0x4C, ED_SET, 0, P_LEVEL, 0x90, 0, 64, 0xF7};
+    reset();
+    for (i = 0; i < sizeof rt; i++) sysex_byte(rt[i]);
+    ed_service(); host_drain();
+    bad += check("realtime bytes interleaved in SysEx do not enter the editor frame",
+                 host_wire_n == 7u && host_wire[4] == ED_PING && host_wire[5] == 0);
+    ota_frame_done(); host_wire_n = 0;
+    for (i = 0; i < sizeof aborted; i++) sysex_byte(aborted[i]);
+    ed_service(); host_drain();
+    bad += check("a non-realtime status aborts SysEx without changing parameters",
+                 !sx_ready && !host_wire_n && TSEL->p[P_LEVEL] == TP[P_LEVEL].def);
+    bad += check("a valid request works after an aborted frame", request(ED_PING, 0, 0) == 7u);
+    ota_frame_done();
+    midi_in_event(0x467DF004u);                          /* F0 7D 46 */
+    midi_in_event(0x00004C04u);                          /* unfinished SysEx */
+    midi_in_event(0x643C9009u);
+    sysex_byte(0xF7);
+    bad += check("a channel event in another USB packet aborts an unfinished SysEx",
+                 !sx_ready && mi_w == 1u && midi_in_q[0] == 0x643C9009u);
+    midi_in_event(0x643C8009u);                          /* wrong CIN */
+    midi_in_event(0x643CFF09u);                          /* wrong status */
+    midi_in_event(0xFF3C9009u);                          /* not a seven-bit velocity */
+    midi_in_event(0x64FF9009u);                          /* not a seven-bit note */
+    bad += check("USB channel packets reject mismatched CIN and high data bits", mi_w == 1u);
+    midi_in_event(0xFF05C00Cu);                          /* one-byte status: padding is ignored */
+    midi_in_event(0xFF07D00Du);
+    bad += check("USB program and channel pressure keep their one-byte payload", mi_w == 3u);
+    mi_w = UINT32_MAX - 5u; mi_r = mi_w;
+    for (i = 0; i < MQ + 8u; i++) midi_in_event(0x643C9009u);
+    bad += check("USB MIDI ring stops at capacity across counter wrap", mi_w - mi_r == MQ && midi_in_overflow);
+    mi_r = mi_w; midi_in_event(0x643C9009u);
+    bad += check("USB rejects new messages until the audio consumer clears overflow", mi_w == mi_r);
+    midi_in_overflow = 0; midi_in_event(0x643C9009u);
+    bad += check("USB resumes after the audio consumer clears overflow", mi_w - mi_r == 1u);
+    return bad;
+}
+
+static int uart_recovery(void)
+{
+    uint32_t i;
+    int bad = 0;
+    reset();
+    um_byte(0x90); um_byte(50);
+    for (i = 0; i < UM_RING; i++) um_ring[i] = 0;
+    um_ring[126] = 0x90; um_ring[127] = 72; um_ring[0] = 99;
+    uart_midi_take(UM_RING + 1u);
+    bad += check("UART DMA overrun never combines a stale partial note with new data",
+                 !mi_w && midi_in_overflow && um.drops == 2u && um.bytes == UM_RING);
+    midi_in_overflow = 0; um_byte(0x90); um_byte(72); um_byte(99);
+    bad += check("UART receives a complete fresh note after DMA recovery",
+                 mi_w == 1u && midi_in_q[0] == 0x63489009u);
+    reset();
+    um_byte(0x90); um_byte(50);
+    for (i = 0; i < UM_RING; i++) um_ring[i] = 60;
+    uart_midi_take(UM_RING + 2u);
+    bad += check("UART discards running-status data after lost bytes until a new status",
+                 !mi_w && midi_in_overflow && um.drops == 2u && !um.st && !um.got);
+    midi_in_overflow = 0;
+    um_byte(0x91); um_byte(70); um_byte(100);
+    bad += check("UART recovers immediately on a complete channel message", mi_w == 1u && midi_in_q[0] == 0x64469109u);
+    reset(); mi_w = MQ;
+    um_byte(0x90); um_byte(60); um_byte(100);
+    bad += check("UART queue overflow latches the same recovery flag as USB", midi_in_overflow && um.drops == 1u && mi_w == MQ);
+    mi_r = mi_w; um_byte(61); um_byte(101);
+    bad += check("UART rejects a new stream until audio clears overflow", mi_w == mi_r && um.drops == 2u);
+    midi_in_overflow = 0; um_byte(62); um_byte(102);
+    bad += check("UART resumes valid running status after audio clears overflow",
+                 mi_w - mi_r == 1u && midi_in_q[mi_r % MQ] == 0x663E9009u);
+    return bad;
+}
+
+static int steps(void)
+{
+    uint8_t a[80] = {0, 1, 60, 0, 0, 0, ST_NOTE, SF_ACCENT, 100, 0x12, 0x02, 1};
+    step_t before;
+    uint32_t n, ok = 1;
+    int bad = 0;
+    reset();
+    TSEL->step[0].hit = TSEL->step[0].acc = 0x80;
+    bad += check("legacy 8-byte step writes preserve lane data",
+                 request(ED_STEP_SET, a, 9) == 19u && TSEL->step[0].note[0] == 60 &&
+                 TSEL->step[0].hit == 0x80 && TSEL->step[0].acc == 0x80);
+    bad += check("full grid step writes preserve high lane bits and constrain accents",
+                 request(ED_STEP_SET, a, 12) == 19u && TSEL->step[0].hit == 0x92 && TSEL->step[0].acc == 2);
+    before = TSEL->step[0]; a[2] = 71;
+    for (n = 2; n <= sizeof a; n++) {
+        if (n == 9u || n == 12u || n == 13u) continue;
+        ok &= !request(ED_STEP_SET, a, n) && !memcmp(&before, &TSEL->step[0], sizeof before);
+    }
+    bad += check("partial or oversized step payloads never mutate a valid step", ok);
+    a[0] = 1; a[1] = 0; memcpy(a + 2, (const uint8_t[]){1,64,0,0,0,ST_NOTE,0,99}, 8);
+    bad += check("TRACK_STEP accepts its legacy payload on an unselected track",
+                 request(ED_TRACK_STEP, a, 10) == 20u && trk[1].step[0].note[0] == 64 && song.sel == 0);
+    before = trk[1].step[0]; a[3] = 65;
+    bad += check("TRACK_STEP rejects an incomplete grid extension",
+                 !request(ED_TRACK_STEP, a, 11) && !memcmp(&before, &trk[1].step[0], sizeof before));
+    return bad;
+}
+
+
+static int song_protocol(void)
+{
+    uint8_t a[] = {1, 1, 0, 2};
+    chain_config_t before;
+    int bad = 0;
+    reset();
+    bad += check("SONG sets and queries the complete chain without changing selection",
+                 request(ED_SONG, a, sizeof a) == 14u && !host_wire[6] && chain_config.count == 1 && song.sel == 0);
+    before = chain_config; a[3] = 0;
+    bad += check("SONG invalid repeats leave the chain unchanged",
+                 request(ED_SONG, a, sizeof a) == 14u && host_wire[6] == 1 && !memcmp(&before, &chain_config, sizeof before));
+    a[3] = 2; chain.armed = 1;
+    bad += check("SONG cannot replace a chain while its start is pending",
+                 request(ED_SONG, a, sizeof a) == 14u && host_wire[6] == 2 && !memcmp(&before, &chain_config, sizeof before));
+    chain.armed = 0; a[0] = 2;
+    bad += check("SONG PLAY refuses extra argument bytes", !request(ED_SONG, a, 2) && !transport_req);
+    return bad;
+}
+
+static int malformed_saves(void)
+{
+    static const uint8_t slot[] = {1, 4}, name[] = {0, 'X', 0, 'Y'};
+    const uint8_t save[] = {1, 0};
+    static uint8_t old[TSP_MAX];
+    uint32_t oldlen;
+    int bad = 0;
+    reset();
+    bad += check("PROJECT refuses an invalid slot instead of wrapping to slot 0",
+                 !request(ED_PROJECT, slot, sizeof slot) && !project_used(0));
+    bad += check("UP_STORE rejects bytes after its name terminator without saving",
+                 request(ED_UP_STORE, name, sizeof name) == 8u && host_wire[6] == 1 && !up_used(0));
+    bad += check("a successful PROJECT save confirms its slot", request(ED_PROJECT, save, sizeof save) == 9u && project_used(0));
+    oldlen = proj_bank_len[0]; memcpy(old, proj_bank_slot[0], oldlen);
+    TSEL->p[P_LEVEL] = 21; song.playing = 1; host_progress = 0;
+    bad += check("PROJECT never confirms an old used slot when STOP timed out",
+                 !request(ED_PROJECT, save, sizeof save) && proj_bank_len[0] == oldlen && !memcmp(old, proj_bank_slot[0], oldlen));
+    return bad;
+}
+
+/* FM6 patches (cmds 68..71): a track's own patch, the bank (RAM here), the factory patches, malformed frames */
+static int fm6_patches(void)
+{
+    int bad = 0;
+    uint8_t a[2 + FM6_PACKED], pk[FM6_PACKED];
+    uint32_t n, i;
+    reset();
+    a[0] = ED_FM6_FACTORY; a[1] = 3;
+    n = request(ED_FM6_GET, a, 2);
+    bad += check("FM6_GET factory 4: the packed record", n == 5u + 3u + FM6_PACKED + 1u && host_wire[7] == 0 &&
+                 !memcmp(host_wire + 8, FM6_FACTORY[3], FM6_PACKED));
+    memcpy(pk, FM6_FACTORY[3], FM6_PACKED);
+    memcpy(pk + 118, "MY PATCH  ", 10);
+    a[0] = ED_FM6_TRACK; a[1] = 2; memcpy(a + 2, pk, FM6_PACKED);
+    n = request(ED_FM6_PUT, a, sizeof a);
+    bad += check("FM6_PUT track 3: rc 0, the track's patch", n == 9u && host_wire[7] == 0 &&
+                 !memcmp(fm6_patch[2] + FP_NAME, "MY PATCH  ", 10));
+    a[1] = 2;
+    n = request(ED_FM6_GET, a, 2);
+    bad += check("FM6_GET track 3: as sent", host_wire[7] == 0 && !memcmp(host_wire + 8, pk, FM6_PACKED));
+    a[0] = ED_FM6_BANK; a[1] = 4;
+    n = request(ED_FM6_GET, a, 2);
+    bad += check("retired FM6 bank GET returns rc 3", n == 9u && host_wire[7] == 3);
+    a[0] = ED_FM6_BANK; a[1] = 4; memcpy(a + 2, pk, FM6_PACKED);
+    request(ED_FM6_PUT, a, sizeof a);
+    bad += check("retired FM6 bank PUT returns rc 3", host_wire[7] == 3);
+    set_engine_of(TSEL, ENGI_FM6);
+    (void)up_store(63, "LAST PRESET");
+    a[0] = ED_FM6_USER; a[1] = 63; memcpy(a + 2, pk, FM6_PACKED);
+    a[2 + 14] = 120;
+    request(ED_FM6_PUT, a, sizeof a);
+    request(ED_FM6_GET, a, 2);
+    bad += check("user U64 owns its sanitized FM6 voice", host_wire[7] == 0 && host_wire[8 + 14] == 99 &&
+                 !memcmp(host_wire + 8 + 118, "MY PATCH  ", 10));
+    n = request(ED_FM6_LIST, a, 0);
+    bad += check("FM6_LIST advertises 24 factory voices and no bank", host_wire[5] == FM6_NFAC && host_wire[6] == 0);
+    a[0] = 4;
+    request(ED_FM6_ERASE, a, 1);
+    bad += check("retired FM6 bank ERASE returns rc 3", host_wire[6] == 3);
+    a[0] = ED_FM6_TRACK; a[1] = 4;
+    request(ED_FM6_PUT, a, sizeof a);
+    i = host_wire[7];
+    request(ED_FM6_PUT, a, 20);
+    bad += check("FM6_PUT: a fifth track or a short record: rc 1", i == 1u && host_wire[7] == 1u);
+    a[0] = ED_FM6_BANK; a[1] = 31;
+    request(ED_FM6_GET, a, 2);
+    bad += check("FM6_GET retired bank: rc 3", host_wire[7] == 3u);
+    return bad;
+}
+
+/* UP_PUT -> UP_GET: every value round-trips through the v4 record (a byte each), negative ones too */
+static int user_preset_roundtrip(void)
+{
+    static uint8_t a[16 + 2u * P_COUNT + 32u];
+    int16_t want[P_COUNT], got[P_COUNT];
+    uint32_t k = 0, i, p, ok;
+    int bad = 0;
+    reset();
+    a[k++] = 3; a[k++] = 6;                                /* slot U04, TRIO */
+    memcpy(a + k, "ROUND", 5); k += 5; a[k++] = 0;
+    for (i = 0; i < P_COUNT; i++) {
+        const param_desc_t *d = param_desc_of(0, i);
+        int16_t v = d->def;
+        uint32_t u;
+        if (i == P_LEVEL) v = 90;
+        if (i == P_PAN) v = -20;
+        if (i == P_ED_FLT) v = -40;
+        if (i == P_LD_FLT) v = d->min;
+        if (i == P_E1) v = d->max;
+        want[i] = v; u = (uint32_t)(v + 8192);
+        a[k++] = u & 127u; a[k++] = (u >> 7) & 127u;
+    }
+    for (i = 0; i < 16u; i++) { a[k++] = i & 1u ? 0u : (uint8_t)(48u + i); a[k++] = 0; }
+    request(ED_UP_PUT, a, k);
+    bad += check("UP_PUT stores a v4 record (no flash here: kept in RAM)",
+                 host_wire[6] != 1u && up_used(3) && up_rec(3)->ver == UP_VER);
+    up_values(up_rec(3), got);
+    for (i = 0, ok = 1; i < P_COUNT; i++) ok &= got[i] == want[i];
+    bad += check("UP_PUT keeps every value (PAN -20, FLT -40, min and max)", ok);
+    a[0] = 3;
+    request(ED_UP_GET, a, 1);
+    ok = host_wire[5] == 3 && host_wire[6] == 1 && host_wire[7] == 6 && !memcmp(host_wire + 8, "ROUND", 6);   /* (slot, used, TRIO) */
+    for (i = 0, p = 14; i < P_COUNT; i++, p += 2u)
+        ok &= (int32_t)(host_wire[p] | host_wire[p + 1] << 7) - 8192 == want[i];
+    for (i = 0; i < 16u; i++, p += 2u)
+        ok &= host_wire[p] == (i & 1u ? 0u : 48u + i);
+    bad += check("UP_GET returns the values and the pattern UP_PUT sent", ok);
+    return bad;
+}
+
+static int bank_protocol(void)
+{
+    int bad=0; reset(); uint8_t a[12] = {2,1,7};
+    bad += check("PATTERN selects a track's bank without changing track selection", request(ED_PATTERN,a,3)==12 && !host_wire[7] && trk[2].pattern==7 && !song.sel);
+    a[2]=8;
+    bad += check("PATTERN rejects out-of-range bank IDs", request(ED_PATTERN,a,3)==12 && host_wire[7] && trk[2].pattern==7);
+    uint8_t row[] = {1,1,0,2,4,7,3};
+    bad += check("bank SONG independently assigns four track banks", request(ED_BANK_SONG,row,sizeof row)==17 && !host_wire[6] && chain_patterns[0][3]==7 && chain_config.row[0].repeat==3);
+    row[4]=8;
+    bad += check("malformed bank SONG leaves the arrangement unchanged", request(ED_BANK_SONG,row,sizeof row)==17 && host_wire[6]==1 && chain_patterns[0][2]==4);
+    a[0]=0; uint32_t writes=host_writes;
+    bad += check("sample upload and erase commands cannot write into pattern storage", request(ED_SMP_BEGIN,a,1)==0 && request(ED_SMP_ERASE,a,1)==0 && host_writes==writes && !host_erases);
+    request(ED_SMP_INFO,a,0);
+    bad += check("sample inventory advertises zero user slots", host_wire[5]==0);
+    return bad;
+}
+
+static int native_protocol(void)
+{
+    int bad=0;reset();uint8_t a[3+2*144u],fm[FM6_PACKED],cz[144u];
+    fm6_factory(5,fm);memset(cz,0,sizeof cz);memcpy(cz+128,"SIXTEEN CHAR CZ! ",16);
+    a[0]=ENGI_FM6;a[1]=2;a[2]=63;memcpy(a+3,fm,sizeof fm);request(ED_NATIVE,a,3+sizeof fm);
+    bad+=check("NATIVE saves F064 independently of general user records",!host_wire[8] && native_used(ENGI_FM6,63) && !up_used(63));
+    a[1]=1;uint32_t n=request(ED_NATIVE,a,3);
+    bad+=check("NATIVE GET returns exact DX7 VMEM bytes",n==138 && !host_wire[8] && !memcmp(host_wire+9,fm,sizeof fm));
+    a[0]=ENGI_CZ;a[1]=2;a[2]=127;
+    for(uint32_t j=0;j<144u;j++){a[3+2*j]=cz[j]&15;a[4+2*j]=cz[j]>>4;}
+    request(ED_NATIVE,a,sizeof a);
+    bad+=check("NATIVE refuses a CZ-1 tone (its pool retired)",host_wire[8]==1 && !native_used(ENGI_CZ,127));
+    a[1]=0;a[2]=0;a[3]=16;request(ED_NATIVE,a,4);
+    bad+=check("NATIVE lists no CZ-1 page",host_wire[8]==1);
+    a[0]=ENGI_FM6;a[1]=0;a[2]=56;a[3]=16;request(ED_NATIVE,a,4);
+    bad+=check("last native page clamps to F064 and reports 64 slots",!host_wire[8] && host_wire[9]==8 && host_wire[10]==64 && host_wire[11]==0);
+    a[0]=ENGI_CZ;a[1]=4;a[2]=126;a[3]=2;request(ED_NATIVE,a,4);
+    bad+=check("a retired engine's native tone does not load",host_wire[8]!=0 && trk[2].eng_req!=ENGI_CZ);
+    a[0]=ENGI_FM6;a[1]=4;a[2]=63;a[3]=2;trk[2].p[P_PAN]=37;trk[2].p[P_LEVEL]=61;trk[2].step[0].note[0]=67;request(ED_NATIVE,a,4);
+    uint8_t packed[FM6_PACKED];fm6_pack(fm6_patch[2],packed);
+    bad+=check("native load targets track 3 and preserves pan, level and pattern",!host_wire[8] && trk[2].user==64 && trk[2].user_native && trk[2].p[P_PAN]==37 && trk[2].p[P_LEVEL]==61 && trk[2].step[0].note[0]==67 && !memcmp(packed,fm,sizeof fm));
+    trk[2].p[P_E2]=23;request(ED_NATIVE,a,4);
+    bad+=check("same-engine native load also keeps track macros",trk[2].p[P_E2]==23);
+    a[0]=ENGI_FM6;a[1]=7;a[2]=1;request(ED_NATIVE,a,3);
+    bad+=check("native status encodes the slot without a 7-bit overflow",!host_wire[8] && host_wire[9]==0 && host_wire[10]==0);
+    uint8_t fav_fm[4]={USER_NATIVE_FM,63,64,1};request(ED_FAV_SET,fav_fm,4);
+    bad+=check("the highest FM6 native preset can be favorited through editor",host_wire[5]==3 && favorite_has(USER_NATIVE_FM,63));
+    a[0]=ENGI_FM6;a[1]=3;a[2]=62;a[3]=2;request(ED_NATIVE,a,4);
+    bad+=check("native STORE captures just the complete tone",!host_wire[8] && native_used(ENGI_FM6,62) && !memcmp(native_raw(ENGI_FM6,62),packed,FM6_PACKED) && !up_used(62));
+    a[1]=6;memcpy(a+3,"TEN CHARS!",10);request(ED_NATIVE,a,13);
+    bad+=check("native rename retains all 10 FM6 name bytes",!host_wire[8] && !memcmp(native_raw(ENGI_FM6,62)+118,"TEN CHARS!",10));
+    a[1]=5;a[2]=63;request(ED_NATIVE,a,3);
+    bad+=check("native erase clears favorite and current preset origin",!host_wire[8] && !native_used(ENGI_FM6,63) && !favorite_has(USER_NATIVE_FM,63) && !trk[2].user);
+    a[0]=ENGI_CZ;a[1]=3;a[2]=0;a[3]=2;request(ED_NATIVE,a,4);
+    bad+=check("wrong-engine store cannot create a native preset",host_wire[8]==1 && !native_used(ENGI_CZ,0));
+    return bad;
+}
+static int names_whole(void)
+{
+    int bad = 0;
+    reset();
+    for (uint32_t e = 0; e < NENGINES; e++) {   /* 0.11 cut CZ-1's 65 names at a 600-byte reply */
+        uint32_t got = 0, pages = 0, ok = 1;     /* PROPHET's 201 come in pages: ask from the next first */
+        while (ok && pages++ < 8u) {
+            uint8_t a[3] = {(uint8_t)e, (uint8_t)(got & 127u), (uint8_t)(got >> 7)};
+            uint32_t n = request(ED_NAMES, a, got ? 3u : 1u), i = 7, k, count = host_wire[6];
+            ok = n >= 12u && n <= sizeof ed_out && host_wire[5] == e && count <= 127u;
+            for (k = 0; ok && k < count; k++) {
+                char want[21];
+                str_cpy(want, eng_preset(ENGINES[e], got + k)->name, 21);
+                ok = got + k < ENGINES[e]->npresets && !strcmp((const char *)host_wire + i, want);
+                while (i < n && host_wire[i++]) ;
+            }
+            for (k = 0; ok && k < 2u; k++)       /* both titles */
+                while (i < n && host_wire[i++]) ;
+            ok = ok && i + 5u == n && (host_wire[i] | host_wire[i + 1] << 7) == ENGINES[e]->npresets &&
+                 (host_wire[i + 2] | host_wire[i + 3] << 7) == got && host_wire[n - 1u] == 0xF7 && (count || !ENGINES[e]->npresets);
+            got += count;
+            if (got >= ENGINES[e]->npresets) break;
+        }
+        if (!ok || got != ENGINES[e]->npresets) {
+            printf("editor: NAMES of %s: %u of %u names\n", ENGINES[e]->name, got, ENGINES[e]->npresets);
+            bad = 1;
+        }
+    }
+    return check("NAMES of every engine carries all its presets and both titles", !bad);
+}
+static int concert_pitch(void)
+{
+    int bad = 0;
+    uint8_t a[4] = {1, G_A4, (432u + 8192u) & 127u, (432u + 8192u) >> 7};
+    reset(); tuning_a4 = 440;
+    int16_t saved = song.g[G_A4];
+    request(ED_SET, a, sizeof a);
+    bad += check("A4 SET updates device tuning without writing project globals", tuning_a4 == 432 && song.g[G_A4] == saved);
+    request(ED_GET, a, 2);
+    bad += check("A4 GET returns the device reference", ed_rv(host_wire + 7) == 432);
+    request(ED_DUMP, a, 0);
+    bad += check("DUMP reports device A4 instead of the unused project field", ed_rv(host_wire + 7 + 2 * (P_COUNT + G_A4)) == 432);
+    a[2] = 0; a[3] = 0; request(ED_SET, a, sizeof a);
+    bad += check("A4 SET clamps to its supported range", tuning_a4 == A4_MIN);
+    tuning_a4 = 440;
+    int16_t old_budget=settings_budget,old_global=song.g[G_BUDGET];
+    a[1]=G_BUDGET;a[2]=(32+8192)&127;a[3]=(32+8192)>>7;request(ED_SET,a,sizeof a);
+    bad+=check("BUDGET SET changes the device pool without changing project data",settings_budget==32 && song.g[G_BUDGET]==old_global);
+    request(ED_GET,a,2);bad+=check("BUDGET GET reports the live allowance",ed_rv(host_wire+7)==32);
+    settings_budget=old_budget;
+    return bad;
+}
+static int scale_catalogue(void)
+{
+    reset(); uint8_t a[2] = {0, P_SCALE};
+    uint32_t n = request(ED_DESC, a, 2), at = 14;
+    while (at < n && host_wire[at++]); /* label */
+    while (at < n && host_wire[at++]); /* unit */
+    int good = ed_rv(host_wire + 10) == SCALE_TOTAL - 1;
+    for (uint32_t i = 0; i < SCALE_TOTAL; i++) {
+        good &= at < n && strcmp((const char *)host_wire + at, N_SCALE[i]) == 0;
+        while (at < n && host_wire[at++]);
+    }
+    return check("SCL DESC carries every legacy and microtonal name in one complete frame", good && at == n - 1);
+}
+static int native_motion_protocol(void)
+{
+    int bad = 0; reset(); set_engine_of(&trk[0], ENGI_FM6); apply_preset_to(&trk[0], 0);
+    uint32_t id = MO_NATIVE + FP_ALG; int16_t value = (int16_t)(MO_TAG_FM6 << 8 | 23);
+    uint16_t encoded = (uint16_t)(value + 8192);
+    uint8_t a[6] = {0,3,63u | 64u,id & 127u,encoded & 127u,encoded >> 7};
+    request(ED_MOTION, a, 6);
+    bad += check("native motion write retains high parameter bit and tagged value", !host_wire[6] && motion.count == 1u &&
+        motion.event[0].param == id && motion.event[0].place == 63u && motion.event[0].value == value);
+    bad += check("native motion query encodes the high id in the spare step bit", host_wire[10] == 127u && host_wire[11] == (id & 127u));
+    a[1] = 4; request(ED_MOTION, a, 4);
+    bad += check("native motion delete removes the same high parameter id", !host_wire[6] && !motion.count);
+    a[1] = 3; a[2] = 0; a[3] = P_LEVEL; a[4] = 64; a[5] = 64; request(ED_MOTION, a, 6);
+    bad += check("legacy motion wire writes retain the original format", !host_wire[6] && motion.event[0].param == P_LEVEL && motion.event[0].value == 64);
+    motion_clear(&trk[0]);a[2]=0;a[3]=P_E1;a[4]=7;a[5]=64;request(ED_MOTION,a,6);
+    a[3]=MO_NATIVE;a[4]=80;a[5]=70;request(ED_MOTION,a,6); /* FM6 tag 3, byte 80 */
+    bad+=check("overlapping native/common IDs coexist through the protocol",!host_wire[6] && motion.count==2);
+    a[1]=4;request(ED_MOTION,a,6);
+    bad+=check("typed native delete retains the common engine event",!host_wire[6] && motion.count==1 && motion.event[0].param==P_E1 && motion.event[0].value==7);
+    a[1]=3;request(ED_MOTION,a,6);a[1]=4;a[4]=7;a[5]=64;request(ED_MOTION,a,6);
+    bad+=check("typed common delete retains the native event",!host_wire[6] && motion.count==1 && motion.event[0].value==(MO_TAG_FM6<<8|80));
+    request(ED_MOTION,a,4);bad+=check("legacy delete clears the remaining raw ID",!host_wire[6] && !motion.count);
+    return bad;
+}
+#ifndef EDITOR_TEST_NO_MAIN
+#include "../firmware/src/fm6_store.c"
+static void receive_library(const uint8_t *frame,uint32_t n)
+{
+    for(uint32_t i=0;i<n;i++)midi_in_event(15u|(uint32_t)frame[i]<<8);
+    fm6_service();ed_service();host_drain();ota_frame_done();
+}
+static int library_transfers(void)
+{
+    int bad=0;uint8_t frame[320],raw[FM6_PACKED];uint32_t n;
+    reset();up_store(2,"NAMED GENERAL");up_rec_t saved=*up_rec(2);int16_t level=TSEL->p[P_LEVEL];
+    bad+=check("general slot exports a complete 7-bit USB frame",!library_send(TSEL->eng_req,2));host_drain();
+    n=host_wire_n;memcpy(frame,host_wire,n);
+    bad+=check("general export has a valid checksum and exact bounded length",n==279u&&frame[0]==240&&frame[n-1]==247&&!sx_checksum(frame+1,n-2));
+    frame[15]^=1;receive_library(frame,n);
+    bad+=check("bad general checksum cannot stage or mutate a saved preset",!sx_import.count&&!memcmp(up_rec(2),&saved,sizeof saved));
+    frame[15]^=1;receive_library(frame,n);
+    bad+=check("named general import opens its pool without loading the track",sx_import.count==1&&sx_import.general&&!library_native()&&cur_page()->graph==GR_USER&&TSEL->p[P_LEVEL]==level&&!memcmp(sx_import.data,&saved,sizeof saved));
+    ui.uslot=5;sysex_choose();bad+=check("chosen general slot retains the entire record and name",!sx_import.count&&up_used(5)&&!memcmp(up_rec(5),&saved,sizeof saved));
+    bulk=(typeof(bulk)){.on=1,.engine=TSEL->eng_req,.anchor=2,.end=5};host_wire_n=0;bulk_send();host_drain();
+    bad+=check("general bulk export sends used selected slots and skips empty slots",host_wire_n==2*n&&!memcmp(host_wire,frame,n)&&!memcmp(host_wire+n,frame,n));
+    reset();memcpy(raw,FM6_INIT,FM6_PACKED);memcpy(raw+118,"FULL DX7!!",10);native_put(ENGI_FM6,3,raw);native_put(ENGI_FM6,4,raw);
+    bulk=(typeof(bulk)){.on=1,.engine=ENGI_FM6,.anchor=3,.end=4};bulk_send();host_drain();n=163;memcpy(frame,host_wire,n);
+    bad+=check("FM6 bulk export sends two independently valid named voice frames",host_wire_n==326&&!memcmp(host_wire,host_wire+n,n)&&!sx_checksum(frame+6,156));
+    receive_library(frame,n);bad+=check("DX7 voice import retains packed bytes without loading or overwriting",sx_import.count==1&&library_engine()==ENGI_FM6&&!memcmp(sx_import.data,raw,FM6_PACKED)&&TSEL->eng_req!=ENGI_FM6);
+    sysex_cancel();bad+=check("cancel releases a pending import without changing its destination",!sx_import.count&&native_used(ENGI_FM6,3));
+    return bad;
+}
+static uint32_t tune_req(const uint8_t *a, uint32_t n) { return request(ED_TUNE, a, n); }
+static uint32_t tune_frame(uint8_t *a, uint32_t slot, const char *name, const char *title, uint32_t count, const int32_t *pitch)
+{
+    uint32_t n = 0, i, k;
+    a[n++] = 2; a[n++] = (uint8_t)slot; a[n++] = (uint8_t)count;
+    for (i = 0; name[i]; i++) a[n++] = (uint8_t)name[i];
+    a[n++] = 0;
+    for (i = 0; title[i]; i++) a[n++] = (uint8_t)title[i];
+    a[n++] = 0;
+    for (i = 1; i <= count; i++)
+        for (k = 0; k < 5u; k++) a[n++] = (uint8_t)(((uint32_t)pitch[i] >> (7u * k)) & 127u);
+    return n;
+}
+static int user_tunings(void)
+{
+    static const int32_t P[6] = {0, 23100, 47400, 71700, 95500, 120800};
+    int32_t big[TUNE_DEGREES + 2u];
+    uint8_t a[600];
+    uint32_t n, i;
+    int bad = 0;
+    reset(); tune_clear_all();
+    request(ED_INFO, 0, 0);
+    for (i = 6, n = 0; i + 3u < host_wire_n; i++)
+        if (host_wire[i] == 0x54 && host_wire[i + 1u] == 1 && host_wire[i + 2u] == TUNE_SLOTS && host_wire[i + 3u] == TUNE_DEGREES) n = 1;
+    bad += check("INFO advertises the user tunings (54 01 slots degrees)", n);
+    n = tune_frame(a, 1, "slendr2", "My slendro", 5, P);
+    tune_req(a, n);
+    bad += check("TUNE put: slot 2 holds the table, its name upper case", host_wire[5] == 2 && !host_wire[6] && host_wire[7] == 1 &&
+                 tune_used(1) && !strcmp(tune_name(1), "SLENDR2") && tune_slot[1].pitch[5] == 120800 && tune_micro[1].count == 5u);
+    a[0] = 1; a[1] = 1;
+    n = tune_req(a, 2);
+    bad += check("TUNE get: the table back, the period last",
+                 !host_wire[6] && host_wire[8] == 5 && !strcmp((const char *)host_wire + 9, "SLENDR2") &&
+                 !strcmp((const char *)host_wire + 17, "My slendro") && n == 28u + 25u + 1u &&
+                 ed_bk_r32(host_wire + 28 + 20) == 120800u && ed_bk_r32(host_wire + 28) == 23100u);
+    a[0] = 0;
+    n = tune_req(a, 1);
+    bad += check("TUNE list: four slots, 64 degrees, TUNING, each slot's count and names",
+                 !host_wire[6] && host_wire[7] == TUNE_SLOTS && host_wire[8] == TUNE_DEGREES && host_wire[9] == 0 &&
+                 host_wire[10] == 0 && host_wire[13] == 5 && !strcmp((const char *)host_wire + 14, "SLENDR2"));
+    a[0] = 4; a[1] = 2;
+    tune_req(a, 2);
+    bad += check("TUNE select: TUNING is slot 2, the micro path plays it", !host_wire[6] && host_wire[7] == 2 && tune_sel == 2u &&
+                 tune_scale() == &tune_micro[1]);
+    a[0] = 4; a[1] = TUNE_SLOTS + 1u;
+    tune_req(a, 2);
+    bad += check("TUNE select past the slots refused", host_wire[6] == 1 && tune_sel == 2u);
+    big[0] = 0; big[1] = 50000; big[2] = 30000; big[3] = 120000;
+    n = tune_frame(a, 0, "BAD", "", 3, big);
+    tune_req(a, n);
+    bad += check("TUNE put of unsorted degrees refused, nothing stored", host_wire[6] == 1 && !tune_used(0));
+    n = tune_frame(a, 0, "EIGHTCHR", "", 5, P);
+    tune_req(a, n);
+    bad += check("TUNE put with an 8-character name refused", host_wire[6] == 1 && !tune_used(0));
+    n = tune_frame(a, 0, "OK", "", 5, P);
+    tune_req(a, n - 1u);
+    bad += check("TUNE put one byte short refused", host_wire[6] == 1 && !tune_used(0));
+    n = tune_frame(a, 4, "OK", "", 5, P);
+    tune_req(a, n);
+    bad += check("TUNE put past the slots refused", host_wire[6] == 1);
+    for (i = 0; i <= TUNE_DEGREES; i++) big[i] = (int32_t)i * 1500;
+    n = tune_frame(a, 3, "BIG64", "Sixty-four", TUNE_DEGREES, big);
+    tune_req(a, n);
+    bad += check("TUNE put of 64 degrees fits a frame", !host_wire[6] && tune_micro[3].count == TUNE_DEGREES);
+    a[0] = 1; a[1] = 0;
+    tune_req(a, 2);
+    bad += check("TUNE get of an empty slot refused", host_wire[6] == 1);
+    a[0] = 3; a[1] = 1;
+    tune_req(a, 2);
+    bad += check("TUNE clear: the slot empty, TUNING on it OFF", !host_wire[6] && !tune_used(1) && tune_sel == 0u);
+    a[0] = 9;
+    tune_req(a, 1);
+    bad += check("TUNE unknown op refused", host_wire[5] == 9 && host_wire[6] == 1);
+    tune_sel = 4;
+    a[0] = 0; a[1] = P_SCALE; a[2] = (3 + 8192) & 127; a[3] = (3 + 8192) >> 7;
+    request(ED_SET, a, 4);
+    bad += check("SET of SCL: its scale again, TUNING OFF", tune_sel == 0u && TSEL->p[P_SCALE] == 3);
+    tune_clear_all();
+    return bad;
+}
+
+/* PANEL (75): the web simulator mirrors the FM-1's panel; channel 16 carries buttons, keys, knobs and MASTER */
+static uint32_t panel_pkts(uint32_t *out, uint32_t max)
+{
+    uint32_t n = 0;
+    while (so_r != so_w) {
+        uint32_t p = sx_out_q[so_r++ % SXQ];
+        if (n < max) out[n++] = p >> 8 & 0xFFFFFFu;                     /* status | d1 << 8 | d2 << 16 */
+    }
+    return n;
+}
+#define PK(st, d1, d2) ((uint32_t)(st) | (uint32_t)(d1) << 8 | (uint32_t)(d2) << 16)
+static int panel_protocol(void)
+{
+    static const uint8_t on[1] = {1}, off[1] = {0}, two[2] = {1, 1};
+    uint32_t p[16], n, bad = 0;
+    reset(); panel_init();
+    fm1_in.buttons = fm1_in.notes = 0;
+    bad += check("PANEL without its one byte gets no reply", request(ED_PANEL, two, 2) == 0 && !panel_out);
+    fm1_in.buttons = 1u << panel.btn[B_PLAY]; fm1_in.notes = 1u << 7;
+    panel_out_steps[EN_K1] = 5;                                          /* (turned while off: not sent) */
+    n = request(ED_PANEL, on, 1);
+    bad += check("PANEL 1 -> on, reply F0 7D 46 4C 4B 01 F7",
+                 n == 7u && host_wire[4] == 75u && host_wire[5] == 1u && host_wire[6] == 0xF7u && panel_out);
+    panel_out_steps[EN_K1] = -2; panel_out_steps[EN_SELECT] = 70; panel_out_master = 1023;
+    ed_service(); n = panel_pkts(p, 16);
+    bad += check("held PLAY, key 7, SELECT +63 of 70, KNOB 1 -2, MASTER: in that order on ch 16",
+                 n == 5u && p[0] == PK(0xBF, 80 + B_PLAY, 127) && p[1] == PK(0x9F, 7, 127) && p[2] == PK(0xBF, 20, 63) &&
+                 p[3] == PK(0xBF, 23, 66) && p[4] == PK(0xBF, 27, 127));
+    ed_service(); n = panel_pkts(p, 16);
+    bad += check("SELECT's other 7 steps next", n == 1u && p[0] == PK(0xBF, 20, 7));
+    ed_service(); n = panel_pkts(p, 16);
+    bad += check("nothing new: nothing sent", n == 0u);
+    panel_out_master = 1021; ed_service(); n = panel_pkts(p, 16);
+    bad += check("MASTER moved by less than 4: not sent", n == 0u);
+    fm1_in.buttons = 0; fm1_in.notes = 0; ed_service(); n = panel_pkts(p, 16);
+    bad += check("let go: PLAY CC 0, key 7 note off", n == 2u && p[0] == PK(0xBF, 80 + B_PLAY, 0) && p[1] == PK(0x8F, 7, 0));
+    so_w = so_r + SXQ - 1u; fm1_in.notes = 3u; ed_service();
+    so_r = so_w; ed_service(); n = panel_pkts(p, 16);
+    bad += check("a full queue: the rest waits, none lost", n == 1u && p[0] == PK(0x9F, 1, 127));
+    fm1_ms += 3001u; fm1_in.notes = 0; ed_service(); n = panel_pkts(p, 16);
+    bad += check("3 s without PANEL 1: off, nothing sent", n == 0u && !panel_out);
+    request(ED_PANEL, on, 1); usb.resets++; ed_service(); n = panel_pkts(p, 16);
+    bad += check("a USB reset: off", !panel_out);
+    request(ED_PANEL, on, 1); ed_service(); panel_pkts(p, 16);                 /* (MASTER again, from a new start) */
+    n = request(ED_PANEL, off, 1);
+    bad += check("PANEL 0 -> off, reply 0", n == 7u && host_wire[5] == 0u && !panel_out);
+    fm1_in.notes = 0;
+    return (int)bad;
+}
+
+int main(void)
+{
+    int bad = library_transfers() + native_motion_protocol() + bank_protocol() + preferences() + framing() + uart_recovery() + steps() + song_protocol() + malformed_saves() + names_whole() +
+              native_protocol() + fm6_patches() + user_preset_roundtrip() + concert_pitch() + scale_catalogue() + user_tunings() + panel_protocol();
+    printf("%s\n", bad ? "EDITOR TEST FAILED" : "editor test passed");
+    return bad != 0;
+}
+#endif

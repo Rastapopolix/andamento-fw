@@ -1,0 +1,722 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Kerem Kilic (Ellic Studio)
+# Portions Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments
+# Host tests of the Melodee sources (no hardware). Run from the repo root after ./build.sh:
+#   tests/run_tests.sh               everything (the gate before a pull request)
+#   SOUND=0 tests/run_tests.sh       everything but the sound tests
+#   SOUND=only tests/run_tests.sh    the sound tests alone
+#   tests/run_tests.sh --quick       QUICK=1: the jobs for the files changed since origin/develop (QUICK_BASE=ref) and a
+#                                    smoke set (qmap below); a file without a rule, or any *_UPDATE, runs everything
+#   tests/run_tests.sh -v            QUIET=0: every job's whole output (default: a line per job; a failure prints its
+#                                    own output, 60 lines at most, and the path of its log)
+# Sound tests: the regression suite, the DSP render and TRACKS, and every test of an engine's or an effect's rendered
+#   signal (native fp32, SPEAKER, MOD, SLICER, the FX layer, REVERB, DELAY, MOD / SPREAD, PHYS, DRUM, NOISE,
+#   FM6, the dual-core pairing). The rest (storage, UI, MIDI, USB, editor, web) always runs.
+# Each test (its compile and its runs) is a job; PARALLEL=n jobs run at once (default: the CPU count; 1: one by one).
+# A job's output goes to build/host/log/<n>.log and is printed (QUIET=0; QUIET=1: its line) in the order of this file as
+# the jobs end; the failures are listed again at the end. The cost gates count instructions, which the load leaves alone; the ns
+# figures printed beside them are noisier in parallel (PARALLEL=1 for quiet ones).
+#
+# Regression suite (tests/regress.c, tests/target_budget.py; details at the top of regress.c):
+#   golden renders  every engine x preset, the GM kit (808 DRUM), voice modes, FX sends, a 4-track mix: one hash
+#                   each in tests/golden.txt. A change of the sound fails with the list of renders.
+#   health          clipping, DC, peak level, voices free after the release, silence at the end.
+#   CPU             instructions / sample per preset and mix (tests/cpu_baseline.txt, +25 %), ns printed;
+#                   target: loop instructions of the render functions in the pi32v2 disassembly
+#                   (tests/target_budget.txt, +10 %; exact, static).
+#   voices          the budget of 8, steal fades, MONO / LEGATO / UNISON keep their note, the VOICE cap,
+#                   no hanging notes on any MIDI / key routing.
+# UI renders (tests/ui_render.c): every screen in every palette from the real drawing code: the layout lint (no text
+#                   off the screen, cut, hidden, overlapping or spilling out of its cell / card; only free text
+#                   ellipsised), MONO gray, the draw cost, the text audit (build/ui_new/text_audit.tsv);
+#                   PNGs of MONO GREEN PAPER in build/ui_new (tests/ui_render.py), the findings in build/ui_new/report.txt;
+#                   FM6's 32 algorithm charts as drawn (no box overlapping, no route through a box or crossing another);
+#                   every frame of the rolling digits (lint, MONO), their filmstrips in build/ui_slot.
+# ANDAMENTO SCREEN (tests/oled_render.c): Andamento's 128 x 64 screen (platform/andamento) through a model of its
+#                   SSD1322: the init commands and their arguments, each frame exactly the screen's 8,192 bytes, read
+#                   back equal to the framebuffer; the bring-up card and the face as PNGs in build/oled (oled_render.py).
+# ANDAMENTO KEYS (tests/and_keys_test.c): Andamento's 16 keys and their RGB lights (platform/andamento/and_keys.c)
+#                   in the virtual prototype's build at 48 kHz: SCALE, CHROM, STEP and MUTE, the octave, ENERGY on the
+#                   keys, a demo's generator notes lighting them.
+# ANDAMENTO HOME (tests/and_home_test.c): Andamento's home screen (platform/andamento/and_home.c) in the same build:
+#                   it starts there and NO comes back, the encoders as the tracks' ENERGY DEPTH, the 8 lanes (5..8
+#                   the external tracks'), ENERGY's history FREE and over a planned piece, a rest; its frames as PNGs in build/oled.
+# ANDAMENTO EXT (tests/and_ext_test.c): Andamento's tracks 5..8 (platform/andamento/and_ext.c) in the same build: their
+#                   generators' notes out on MIDI channels 5..8 on the grid, one at a time, in the scale; the CV and gate;
+#                   STOP, PLAY again from the SEED, MUTE, CHAN OFF, ENERGY's DEPTH, a key, their pages, and tracks 1..4
+#                   bit for bit the same with them playing; its frames as PNGs in build/oled.
+# ANDAMENTO SCREENS (tests/and_ui_test.c): Andamento's two screens (platform/andamento/and_ui.c) in the same build:
+#                   the page screen (header, picture, tabs) and the dial screen on every page of an internal and an
+#                   external track and on HOME; the dial screen's layout lint (no value cut, each in its cell, a clear
+#                   pixel round a box's text and between neighbours); a setting turned (inverted, large in the
+#                   picture); both screens as PNGs in build/oled.
+# ANDAMENTO MASTER (tests/and_master_test.c): Andamento's master bus (platform/andamento/and_master.c), tilt EQ then
+#                   compressor, called directly (not through a project playing): MIX 0 is bit-identical, MIX 100 with
+#                   no gain reduction and no tilt is unchanged but for rounding, the compressor settles below a loud
+#                   tone and returns to unity gain under THRESH, MAKEUP's dB, TILT's direction, and determinism.
+# ANDAMENTO TEXTURE (tests/and_texture_test.c): Andamento's texture engine (platform/andamento/and_texture.c), a
+#                   granular cloud resampling and_master_block's output, called directly: MIX 0 is bit-identical,
+#                   an empty capture barely changes a tone, a filled one keeps sounding after the dry input stops,
+#                   FREEZE holds the capture still, a busier DENS is not quieter, AT_GRAINS (8) is never exceeded,
+#                   and determinism.
+# UI (tests/ui_test.c): the UI sources against stub display / buttons / knobs: sound loads keep the steps and
+#                   the track's ARP / SCL / SLICER, the SEQ > PATTERNS loader and its REPLACE? dialog, the
+#                   one-step undo of both (EDIT held), REC on TRACKS / SEQ / ARP, STEP and ARP while recording,
+#                   MIDI IN ROUT, saves refused while playing and the OVERWRITE? dialog, MUTE on TRACKS KNOB 1,
+#                   the DRUM grid (keys, knobs, LEDs, pages, live recording into it, BEAT from PATTERNS).
+# Audio / persistence / editor: the real C paths against simulated DMA and NOR flash: bounded overload
+#                   fades, shared-voice limits, deferred settings and retries, failed-save rollback,
+#                   malformed transfers, transport-stop timeouts, MIDI and UART recovery.
+# CHORD (tests/chord_test.c): the chord keys (src/chord.c): diatonic triads / sevenths of several scales and roots,
+#                   the fixed shapes and voicings (at most 4 notes), names, MONO plays the root, a release ends
+#                   exactly what its key / MIDI note started, recording, the ARP, MIDI IN, kits ignore CHRD.
+# MOD (tests/mod_test.c): the modulation matrix: slots that do nothing are bit-identical, every source on each
+#                   kind of destination, clamping, MIDI CC1 / CC11 / aftertouch routing, the cost of 4 active
+#                   slots (PHYS at most +5%, mixed dry path at most 90 instructions/sample), demos in build/mod_demo/.
+# LEGACY FX (tests/no_effects_test.c): legacy values/automation do not process audio or allocate,
+#                   old notes survive, retired MIDI sends are inert, FX opens only the new knob page.
+# MOD / SPREAD (tests/mod_spread_test.c): the matrix's S&H / SLEW sources and DEPTH destination, SPREAD's sides.
+# LAYERS / SCREEN (tests/layer_screen_test.c): GLO/SCL double-tapped layers, SCREEN OFF, LFO 2.
+# INPUT (tests/input_test.c): the key / button debounce of hal/fm1_input.h against the TIMER5 scan and bouncing
+#                   contacts: a press within 2 scans (<= 2.3 ms), one note per bouncy press, no early or hanging
+#                   release, stray samples ignored, fast repeats, the encoders' detents.
+# USB audio (tests/usb_audio_*): the descriptors of every build (MIDI only, CDC, USB audio) as a host parses them
+#                   (usb_audio_desc_test.py); the rings against clock drift, packet bounds and recovery
+#                   (usb_audio_test.c); the endpoint driver against a model SIE: SET_INTERFACE, feedback, capture
+#                   packets ready in time, Out / In left out and the replug (usb_audio_driver_test.c); the four
+#                   track stems through the real mixer (usb_audio_tracks_test.c).
+# USB MIDI host (tests/usb_host_test.c): the driver against a SIE and bus model: a keyboard direct, behind a hub and
+#                   behind a hub in a hub, the ABOUT scan lines, a stick without MIDI, low speed, hot-plug, ring back-pressure, OUT ACK / NAK / stall, back to device.
+# web (web/test_web.mjs): the editor protocol against its mock device, whose tables must equal the
+#                   firmware's (tests/descdump.c -> build/host/desc.json), the package builder, the updater.
+# PHYS (tests/phys_test.c): stability over the whole parameter and pitch range, the worst-case cost against
+#                   the heaviest factory preset, demos in build/phys_demo/; tests/phys_ref.cpp compares the
+#                   fixed-point models with DaisySP's float originals when DaisySP is there (DAISYSP=path).
+# DRUM (tests/drum_test.c): the drum voices (src/drum_voice.c): pitch, decay, centroid and level against
+#                   Melodee's targets, the controls' directions, no clipping, DC, retriggers, the hat choke, the
+#                   kick on a small speaker; the DRUM engine (src/eng_drum.c): its key map, the 8 lanes together,
+#                   one hit per lane, the choke between lanes; the cost per voice; demos in build/drum_demo/.
+# NOISE (tests/noise_test.c): the engine (src/eng_noise.c): COLR's slope (white, pink, brown), the filter and the
+#                   register clock following the key, META periodic at the key, no DC, no clipping at the
+#                   corners, a note from silence the same twice, the cost per voice; demos in build/noise_demo/.
+# FM6 (tests/fm6_test.c): the 6-operator FM engine (src/eng_fm6.c, src/fm6_core.c) against the DX7: the 32 algorithms
+#                   against its diagrams, pitch, levels, envelopes, modulation; no DC / clipping over the factory
+#                   patches, the macros (neutral at 0, their directions), factory presets, pack / unpack and the SysEx layouts,
+#                   Dexed's 16 voices, the cost per voice; demos in build/fm6_demo/. tests/fm6_ams_test.c: the fp32 AMS share
+#                   against Dexed's double reference. With DEXED_SRC (a Dexed checkout's Source/): tests/fm6_parity.sh
+#                   --quick renders scores through Dexed's own code and FM6 and reports sample differences (strict parity predates the fp32 port).
+# TESSERA (tests/tessera_test.c): every note the generators play in each scenario (each generator, EVOLVE, FORM, TWEAK,
+#                   scales, divisions, transport, mute, knobs while playing, external MIDI clock) against tests/tessera_baseline.txt,
+#                   no note held after the stop, the generator state after the stop, the saved block's bytes and round
+#                   trip; a generator picked or unmuted mid-bar plays as if it had run from PLAY (ATLAS, EUCLID 13,
+#                   16T, SWING); logs in build/tessera_log/. TESSERA_UPDATE=1 rewrites the baseline (only after an intended
+#                   change of what they play). tests/gen_test.c: each generator alone (gen.c without the firmware).
+# FORM CHAIN (tests/chain_test.c): form chaining (form_chain.c) through the sequencer: the letters in order with their
+#                   REPEATs, the change on the phrase's first step (tracks of other DIVs the same block), FOLLOW / OWN
+#                   and its default, an OWN track as without the CHAIN, SKIP, WANDER's rules and repeatability, FLOURISH
+#                   on the CHAIN's phrase, STOP and PLAY; FORM OFF with the rest turned plays the same notes.
+# ENTRIES (tests/entries_test.c): Entries (entries.c) through the sequencer: changes only on phrase lines, exits only where
+#                   a section begins, one entry a phrase, DWELL, at most ENTRIES out and one always playing, ANCHOR,
+#                   a melody over a bass or harmony, the breakdown before A and the full return, FORM OFF's sections,
+#                   PLAY again, CUT / FADE, no voice from a silent track, hand mutes and GLO's key, SOLO, AUTO's roles;
+#                   ENTRIES 0 with the rest turned plays the same notes.
+# SPLIT (tests/split_test.c): TIMING's SPLIT through the real sequencer, read off MIDI OUT.
+# FOLLOW (tests/follow_test.c): FOLLOW's HOW and RHYTHM through the real sequencer, read off MIDI OUT.
+# CLOCK (tests/cordclock_test.c): a generator track stepped by a CLOCK cord (cord.c, seq.c seq_grid_tick): the DIV clock
+#                   replaced, the first step at PLAY, the division and the edge, hits, the wait for DIV, STOP, a cord
+#                   put on and taken off, no cord / AMOUNT 0 as before.
+# RECIPES (tests/recipes_test.c): two of GENERATIVE.md's patches as the guide sets them up, rendered through mix_block:
+#                   the Krell (a step on each LFO cycle start, each cycle its own length) and Long gates (two LFOs
+#                   summed in BUS A, compared onto PLAY: heard in stretches of different lengths; no mod: always).
+# PIECE (tests/planner_test.c): the piece planner (planner.c): the ten SHAPEs (range, PEAK, COUNT, USER, sparse ends),
+#                   LENGTH FREE with the rest turned plays the same notes, a 10-minute ARCH (intro, top, outro, the
+#                   CHAIN home for its last 15 %, ENERGY its curve, CONTRAST near the top), END STOP / LOOP / NEW / FREE,
+#                   a tempo change, the PIECE knobs.
+# LONG-FORM (tests/longform_test.c): eight hours of ten patches left playing (notes only: the sequencer without the
+#                   voices, checked against mix_block for the first two minutes): no long silence, no collapse to one
+#                   note, no loop replayed for minutes, not thinning out by the last hour; a table of every measure in
+#                   build/longform_report.txt. KNOWN: a FORM at DEVELOP 0 freezes by design (prints KNOWN; fails if it stops).
+# Change baseline entries only for reviewed, intentional differences in sound or cost;
+# retain every unaffected golden / CPU / target entry. VERBOSE=1: every render.
+export AC79_SDK="${AC79_SDK:-$HOME/fw-AC79_AIoT_SDK}"
+cd "$(dirname "$0")/.."
+# Pillow's Raqm (text spacing, renders): macOS strips DYLD_* on the way into /bin/sh (build.sh)
+[ "$(uname -s)" = Darwin ] && export DYLD_FALLBACK_LIBRARY_PATH="${DYLD_FALLBACK_LIBRARY_PATH:-/opt/homebrew/lib:/usr/local/lib:/usr/lib}"
+OUT=build/host
+LOG=$OUT/log
+CC="${CC:-cc} -O1 -ffp-contract=off -Wall -Wno-unused-function"
+FW="-w -Ibuild/gen -Ifirmware/src"
+SOUND=${SOUND:-1}
+PARALLEL=${PARALLEL:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
+case $SOUND in 0 | 1 | only) ;; *) echo "SOUND=0, 1 or only"; exit 2 ;; esac
+[ "$PARALLEL" -ge 1 ] 2>/dev/null || { echo "PARALLEL=n, n >= 1"; exit 2; }
+python3 tools/gen_scales.py --check || exit 1
+python3 tools/audio_contract.py --check || exit 1
+[ -f build/tessera.fwsc ] || { echo "run ./build.sh first"; exit 1; }
+TABLES=0; [ -f build/gen/melodee_tables.h ] && TABLES=1
+PIL=0; python3 -c "import PIL" 2>/dev/null && PIL=1
+mkdir -p "$OUT" "$LOG"
+rm -f "$LOG"/*
+start=$(date +%s)
+
+# ------------------------------------------------------------------ QUICK ---
+# qmap FILE: the jobs (QSEL) and regress's engines (QENG) for a changed file; returns 1 when no rule covers it.
+G_UI="ui_renders ui_test speak_test layer_screen_test theme_test text_ref_test text_spacing_test msg_len_test"
+G_SEQ="seq_edit_test seq_notes_test pattern_test note_tools_test swing_test split_test follow_test cordclock_test motion_test recording_test"
+G_GEN="gen_test tessera_test chain_test entries_test planner_test split_test follow_test cordclock_test recipes_test"
+G_STORE="storage_test persistence_test upgrade_test backup_test demo_projects settings_test upreset_test storage_safety_test
+    settings_origin_test preset_boot_reset_test fm6_preset_test"
+G_MIDI="midi_control_test midi_out_test seq_dir_test midi_timing_test midi_scale_test midi_uart_test recording_test"
+G_USB="usb_audio_test usb_audio_driver_test usb_audio_tracks_test usb_host_test usb_audio_desc_test"
+G_SCALE="scale_test microtonal_test scale_picker_test tune_test uscale_test tuning_test midi_scale_test"
+G_AUDIO="regress audio_test audio_matrix_test ram_audio_test ram_voice_budget_test voice_ceiling_test audio_admission_test resources_test
+    dsp_tracks dual_core_test target_budget fs_test"
+eng() { QENG="$QENG $1"; shift; QSEL="$QSEL regress target_budget $*"; }
+qmap() {
+    case $1 in
+        docs/PARAMETERS.md) QSEL="$QSEL pid_test" ;;
+        *.md | LICENSE* | LICENSES/* | docs/design/* | docs/*.txt) ;;  # prose: nothing to run
+        web/sim/build.sh | tools/build.py) QSEL="$QSEL sim_flags_test web_tests" ;;
+        docs/* | web/*) QSEL="$QSEL web_tests nightly_site_test" ;;
+        demos/*) QSEL="$QSEL demo_projects" ;;
+        firmware/words.tsv | firmware/words_allow.txt) QSEL="$QSEL speak_test" ;;
+        firmware/src/eng_fm6* | firmware/src/fm6_core.c) eng FM6 fm6_test fm6_ams_test synth_fpu_test dual_core_test ;;
+        firmware/src/eng_phys.c | firmware/src/phys_*) eng PHYS phys_test phys_ref ;;
+        firmware/src/eng_drum.c | firmware/src/drum_808.c | firmware/src/x0x/*) eng DRUM drum_test drum_editor_test ;;
+        firmware/src/eng_noise.c) eng NOISE noise_test ;;
+        firmware/src/eng_oracle.c | firmware/src/oracle_*) eng ORACLE oracle_test ;;
+        firmware/src/eng_trio.c) eng TRIO ;;
+        firmware/src/eng_wheel.c) eng WHEEL ;;
+        firmware/src/eng_formant.c) eng VOICE ;;
+        firmware/src/fx.c) QREG=1; QSEL="$QSEL $G_AUDIO fx_test fx_performance no_effects_test" ;;
+        firmware/src/mod.c) QREG=1; QSEL="$QSEL $G_AUDIO mod_test mod_spread_test" ;;
+        firmware/src/voice.c | firmware/src/mix.c | firmware/src/dsp.c | firmware/src/audio*.[ch] | firmware/src/engines.c | \
+            firmware/src/resources.c | firmware/src/native_presets.c) QREG=1; QSEL="$QSEL $G_AUDIO designer_test" ;;
+        firmware/src/ui_cords.c | firmware/src/cord.[ch]) QSEL="$QSEL $G_UI cord_test mod_test recipes_test" ;;
+        firmware/src/ui_speak.c) QSEL="$QSEL $G_UI" ;;
+        firmware/src/ui_designer*) QSEL="$QSEL $G_UI designer_test" ;;
+        firmware/src/ui_help.c | firmware/src/pid.[ch] | firmware/src/pid_help_unpack.h | firmware/src/params.c)
+            QSEL="$QSEL $G_UI pid_test help_pack_test cord_test" ;;
+        firmware/src/ui*.c | firmware/src/gfx.c | firmware/src/icons.c | firmware/src/screen.c | firmware/src/splash.c | \
+            firmware/src/panel.c | firmware/src/browse.c) QSEL="$QSEL $G_UI" ;;
+        firmware/src/lcd.c) QSEL="$QSEL $G_UI lcd_overlap_test" ;;
+        firmware/src/chord.c) QSEL="$QSEL chord_test" ;;
+        firmware/src/seq*.c | firmware/src/step_*.[ch] | firmware/src/note_*.c | firmware/src/pattern.c | \
+            firmware/src/recording*) QSEL="$QSEL $G_SEQ" ;;
+        firmware/src/song_chain.c) QSEL="$QSEL $G_SEQ ui_test" ;;
+        firmware/src/gen*.[ch] | firmware/src/tessera.[ch] | firmware/src/pat_gen.c | firmware/src/answer.c | \
+            firmware/src/organic.c | firmware/src/vary.c | firmware/src/page_random.c) QSEL="$QSEL $G_GEN" ;;
+        firmware/src/form_chain.c) QSEL="$QSEL chain_test entries_test planner_test" ;;
+        firmware/src/entries.c | firmware/src/energy.c | firmware/src/planner.c) QSEL="$QSEL entries_test planner_test" ;;
+        firmware/src/storage*.c | firmware/src/project*.c | firmware/src/settings_persist.c | firmware/src/fm6_store.c | \
+            firmware/src/upreset.c | firmware/src/favorites.c) QSEL="$QSEL $G_STORE" ;;
+        firmware/src/midi_*.c) QSEL="$QSEL $G_MIDI" ;;
+        firmware/src/usb*) QSEL="$QSEL $G_USB" ;;
+        firmware/src/editor*.c | firmware/src/sysex_library.c) QSEL="$QSEL editor_test fm6_sysex_test web_tests designer_test" ;;
+        firmware/src/scale*.[ch] | firmware/src/microtonal.h | firmware/src/tun*.h | firmware/src/uscale.h) QSEL="$QSEL $G_SCALE" ;;
+        tests/golden.txt | tests/cpu_baseline.txt | tests/regress.c) QREG=1; QSEL="$QSEL regress" ;;
+        tests/tessera_baseline.txt) QSEL="$QSEL tessera_test" ;;
+        tests/pid_ids.txt) QSEL="$QSEL pid_test" ;;
+        tests/cord_dests.txt) QSEL="$QSEL cord_test" ;;
+        tests/target_budget.txt) QSEL="$QSEL target_budget" ;;
+        tests/ui_render.*) QSEL="$QSEL ui_renders" ;;
+        tests/oled_render.*) QSEL="$QSEL oled_render" ;;
+        platform/andamento/*) QSEL="$QSEL oled_render and_keys and_home and_ext and_ui and_master and_texture" ;;
+        tests/and_keys_test.c) QSEL="$QSEL and_keys" ;;
+        tests/and_home_test.c) QSEL="$QSEL and_home" ;;
+        tests/and_ext_test.c) QSEL="$QSEL and_ext" ;;
+        tests/and_ui_test.c) QSEL="$QSEL and_ui" ;;
+        tests/and_master_test.c) QSEL="$QSEL and_master" ;;
+        tests/and_texture_test.c) QSEL="$QSEL and_texture" ;;
+        web/andamento/*) QSEL="$QSEL and_keys and_home and_ext and_ui and_master and_texture" ;;
+        firmware/src/mo_font.h) QSEL="$QSEL $G_UI oled_render" ;;
+        tests/demo_steps.h | tests/demo_projects.c) QSEL="$QSEL demo_projects" ;;
+        tests/phys_ref.cpp | tests/phys_fixed.c) QSEL="$QSEL phys_ref" ;;
+        tests/fm6_parity* | tests/fm6_score.h | tests/dexed_*) QSEL="$QSEL fm6_parity" ;;
+        tests/boot_fixtures.py) QSEL="$QSEL loader_powercut_test" ;;
+        tests/descdump.c) QSEL="$QSEL web_tests" ;;
+        tests/*_test.c | tests/*_test.py | tests/*.py | tests/*.c) _f=${1#tests/}; QSEL="$QSEL ${_f%.*}" ;;
+        *) return 1 ;;                            # the rest (hal, loader, tools, build, hostsim.c, run_tests.sh): all
+    esac
+}
+QUICK=${QUICK:-0} QUIET=${QUIET:-1}
+for _a; do
+    case $_a in
+        --quick) QUICK=1 ;;
+        --full) QUICK=0 ;;
+        -v | --verbose) QUIET=0 ;;
+        *) echo "usage: tests/run_tests.sh [--quick] [-v]"; exit 2 ;;
+    esac
+done
+if [ "$QUICK" = 1 ]; then
+    for _u in GOLDEN_UPDATE BUDGET_UPDATE PID_UPDATE CORD_UPDATE TESSERA_UPDATE; do
+        eval "[ -n \"\${$_u:-}\" ]" && { echo "QUICK: $_u rewrites a whole file: the full suite runs"; QUICK=0; }
+    done
+fi
+if [ "$QUICK" = 1 ]; then
+    _base=$(git merge-base "${QUICK_BASE:-origin/develop}" HEAD 2>/dev/null) || {
+        echo "QUICK: no ${QUICK_BASE:-origin/develop} to compare with: the full suite runs"; QUICK=0; }
+fi
+if [ "$QUICK" = 1 ]; then
+    # the smoke set, always: the firmware built a few ways, the UI against the stubs, storage, the parameter ids
+    QSEL=" pid_test ui_test storage_test settings_test msg_len_test" QENG= QREG=0 _odd= _nf=0
+    _files=$( (git diff --name-only "$_base"; git ls-files --others --exclude-standard) | sort -u)
+    _docs=1
+    for _f in $_files; do
+        _nf=$((_nf + 1))
+        case $_f in *.md | LICENSE* | LICENSES/* | docs/*) ;; *) _docs=0 ;; esac
+        qmap "$_f" || _odd="$_odd $_f"
+    done
+    [ $_docs = 1 ] && QSEL=${QSEL#" pid_test ui_test storage_test settings_test msg_len_test"}
+    if [ -n "$_odd" ]; then
+        echo "QUICK: no rule for$_odd: the full suite runs"
+        QUICK=0
+    elif [ $QREG = 0 ] && [ -n "$QENG" ]; then
+        export REGRESS_ONLY="$QENG"               # regress renders and costs these engines alone
+    fi
+fi
+if [ "$QUICK" = 1 ]; then
+    export UI_PPM=${UI_PPM:-0}                    # the UI renders' lint without writing ~730 MB of pictures
+    echo "QUICK: $_nf files changed since $(git rev-parse --short "$_base"); jobs:$(echo $QSEL | tr ' ' '\n' | sort -u | tr '\n' ' ')${REGRESS_ONLY:+(regress: $REGRESS_ONLY)}"
+fi
+
+# ------------------------------------------------------------------- jobs ---
+# job FN ARGS...: FN ARGS in the background once one of the PARALLEL slots is free (fd 3, a FIFO holding a line per
+#   free slot), the output in $LOG/<n>.log; a failure is a line in $LOG/<n>.fail, $LOG/<n>.done marks the end.
+# In a job: step TITLE CMD... (the title, then CMD; a failure is noted and the job goes on),
+#   build OUT SRC FLAGS... (tests/SRC.c -> $OUT/OUT), fail WHAT.
+# t TITLE OUT[:SRC] FLAGS... [-- CMD...]: the job building tests/SRC.c (SRC: OUT) and running CMD ($OUT/OUT).
+n=0 shown=0 pids=
+mkfifo "$LOG/slots" && exec 3<>"$LOG/slots" && rm -f "$LOG/slots" || exit 1
+i=0; while [ $i -lt "$PARALLEL" ]; do echo; i=$((i + 1)); done >&3
+# jobs ignore SIGINT (asynchronous lists): stop them and everything under them (cc -> clang -cc1, regress -> its renders)
+tree() { echo "$1"; for c in $(pgrep -P "$1"); do tree "$c"; done; }
+stop() { kill -TERM $(for p in $pids; do tree "$p"; done) 2>/dev/null; }
+trap 'stop; exit 130' INT
+trap 'stop; exit 143' TERM
+
+fail() { echo "$1" >> "$LOG/$n.fail"; }
+ended() { [ -f "$LOG/$1.done" ] && echo $(($(cat "$LOG/$1.done") - $(cat "$LOG/$1.start"))) || echo "?"; }
+step() { echo "== $1"; _step=$1; shift; "$@" || fail "$_step"; }
+build() {
+    _out=$1 _src=$2; shift 2
+    $CC "$@" -o "$OUT/$_out" "tests/$_src.c" -lm || { fail "compile tests/$_src.c ($_out)"; return 1; }
+}
+_t() {
+    _title=$1 _out=${2%%:*} _src=${2#*:} _flags=; shift 2
+    while [ $# -gt 0 ] && [ "$1" != -- ]; do _flags="$_flags $1"; shift; done
+    [ $# -gt 0 ] && shift
+    [ $# -gt 0 ] || set -- "$OUT/$_out"
+    echo "== $_title"
+    build "$_out" "$_src" $_flags || return
+    "$@" || fail "$_title"
+}
+brief() {                                         # QUIET: a job's line; a failed one's own output (60 lines)
+    _l=$LOG/$1.log _title=$(sed -n '1s/^== //p' "$_l")
+    if [ "$(cat "$LOG/$1.key")" = note ]; then
+        printf 'note        %s\n' "$_title"
+    elif [ ! -f "$LOG/$1.fail" ]; then
+        printf 'ok   %4ss  %.96s\n' "$(ended "$1")" "$_title"
+        sed -n -E '2,$s/^== (note|skip)/            \1/p' "$_l"
+    fi
+    [ -f "$LOG/$1.fail" ] || return 0
+    printf 'FAIL %4ss  %s\n' "$(ended "$1")" "$_title"
+    if [ "$(wc -l < "$_l")" -le 60 ]; then
+        sed 's/^/  | /' "$_l"
+    else                                          # the lines that say what failed, then the end
+        grep -n -i -E 'fail|error|changed|over budget|crash|assert|differ|mismatch|expected' "$_l" | head -25 |
+            sed 's/^/  | line /'
+        echo "  | ... the last 30 of $(wc -l < "$_l") lines:"
+        tail -n 30 "$_l" | sed 's/^/  | /'
+    fi
+    sed 's/^/  failed: /' "$LOG/$1.fail"
+    echo "  full log: $_l"
+}
+flush() {                                         # the logs of the jobs ended, in order
+    while [ $shown -lt $n ] && [ -f "$LOG/$((shown + 1)).done" ]; do
+        shown=$((shown + 1))
+        if [ "$QUIET" = 1 ]; then brief $shown; else cat "$LOG/$shown.log"; fi
+        [ -f "$LOG/$shown.fail" ] && cat "$LOG/$shown.fail" >> "$LOG/failed"
+    done
+}
+job() {
+    jkey "$@"
+    [ "$QUICK" = 1 ] && ! wanted && return
+    read -r slot <&3
+    flush
+    n=$((n + 1))
+    echo "$_k" > "$LOG/$n.key"
+    date +%s > "$LOG/$n.start"
+    ( "$@" 3>&- > "$LOG/$n.log" 2>&1; date +%s > "$LOG/$n.end"; mv "$LOG/$n.end" "$LOG/$n.done"; echo >&3 ) &
+    pids="$pids $!"
+}
+jkey() {                                          # a job's name for QUICK: the test's binary and source, the script, the function
+    case $1 in
+        _t) _k="${3%%:*} ${3#*:}" ;;
+        echo) _k=note ;;
+        step) _k=other
+              for _a; do case $_a in tests/*.py | tests/*.sh) _k=${_a#tests/}; _k=${_k%.*}; break ;; esac; done ;;
+        *) _k=$1 ;;
+    esac
+}
+wanted() { for _w in $_k; do case " $QSEL " in *" $_w "*) return 0 ;; esac; done; return 1; }
+t() { job _t "$@"; }
+run() { job step "$@"; }
+note() { job echo "$@"; }
+core() { [ "$SOUND" != only ]; }
+sound() { [ "$SOUND" != 0 ]; }
+
+# ----------------------------------------------------------- multi-step jobs ---
+web_tests() {                                     # the editor mock's tables must equal the firmware's (desc.json)
+    if [ $TABLES = 1 ]; then
+        build descdump descdump $FW &&
+            step "parameter and engine tables as JSON (for the editor mock test)" desc_json
+    fi
+    if command -v node >/dev/null 2>&1; then
+        step "web pages: editor protocol, package builder, update protocol" node web/test_web.mjs
+        step "web backup: capture, validation before writes, restore order" node web/test_backup.mjs
+        if python3 -c "import fontTools" 2>/dev/null; then
+            step "web pages: Tessera Mono is the firmware's 5 x 7 font" python3 tools/gen_mono_webfont.py --check
+        fi
+    else
+        echo "== skip web tests (no node)"
+    fi
+}
+desc_json() { "$OUT/descdump" > "$OUT/desc.json"; }
+demo_tests() {                                    # the demos made again, the shipped ones loaded, and put into a backup
+    mkdir -p build/demos &&
+        "$OUT/demo_projects" make build/demos 20 &&
+        "$OUT/demo_projects" check demos &&
+        mkdir -p build/demos/checks &&            # the test projects (demos/checks/): made again, the shipped ones load
+        "$OUT/demo_projects" checks make build/demos/checks 20 &&
+        "$OUT/demo_projects" checks check demos/checks &&
+        for _d in demos/checks/*.tsp; do
+            cmp -s "$_d" "build/demos/checks/${_d#demos/checks/}" ||
+                echo "== note: $_d differs from the one made now: make the test projects again (demos/checks/README.md)"
+        done &&
+        for _d in demos/*.tsp; do                 # (a note, not a failure: a new setting's default changes them too)
+            cmp -s "$_d" "build/demos/${_d#demos/}" ||
+                echo "== note: $_d differs from the one made now: make the demos again (demos/README.md)"
+        done &&
+        "$OUT/demo_projects" archive build/demos/blank.json &&
+        python3 tools/demo_backup.py build/demos/blank.json build/demos/with-demos.json &&
+        "$OUT/demo_projects" restore build/demos/with-demos.json
+}
+old_to_new() {                                    # a package of another app (this one cut short) -> this build
+    head -c 200000 build/melodee.bin > "$OUT/old_app.bin" &&
+        python3 tools/fm1pkg_make.py "$OUT/old_app.bin" build/loader/ota.bin "$OUT/old.fwsc" >/dev/null &&
+        "$OUT/ldr_test" "$OUT/old.fwsc" build/tessera.fwsc
+}
+powercut_tests() {
+    python3 tests/boot_fixtures.py &&
+        "$OUT/loader_powercut_test" build/host/boot-fixtures/legacy.fwsc build/tessera.fwsc \
+        build/host/boot-fixtures/same-stub.fwsc build/host/boot-fixtures/other-legacy.fwsc \
+        build/host/boot-fixtures/old-stub.fwsc
+}
+ui_renders() {
+    build ui_render ui_render -O1 -w -DMELODEE_USB_AUDIO=1 -DMELODEE_USB_HOST=1 -Ibuild/gen -Ifirmware/src -Itests || return
+    mkdir -p build/ui_new/ppm build/ui_slot
+    step "UI renders: layout lint (every screen and palette, every page, engine and column value), MONO gray, draw cost" \
+        "$OUT/ui_render" build/ui_new build/ui_slot
+    if [ "${UI_PPM:-1}" = 0 ]; then               # (--quick: the lint, no pictures)
+        echo "== note: no pictures (UI_PPM=0); UI_PPM=1 tests/run_tests.sh --quick makes them"
+    elif [ $PIL = 1 ]; then
+        python3 tests/ui_render.py build/ui_new build/ui_slot || fail "tests/ui_render.py"
+        python3 tools/ui_mockcmp.py build/ui_new build/ui_mock || fail "tools/ui_mockcmp.py" # redesign parity (docs/design): a report, no gate yet
+    fi
+    # (a second render built with -DMELODEE_LOOK=1 into build/ui_mono ran here until 2026-11-10: the same look as this
+    # one since Mono became the default, the same pictures byte for byte, ~730 MB written again)
+}
+oled_render() {
+    build oled_render oled_render || return
+    mkdir -p build/oled/ppm
+    step "Andamento screen (platform/andamento): the SSD1322 driver through a model of the controller, the frame read back" \
+        "$OUT/oled_render" build/oled
+    [ $PIL = 1 ] && { python3 tests/oled_render.py build/oled || fail "tests/oled_render.py"; }
+}
+and_keys() {                                      # (the headers at the Seed's 48 kHz, as web/andamento/build.sh)
+    sh web/andamento/build.sh --headers > /dev/null || { fail "web/andamento/build.sh --headers"; return; }
+    build and_keys and_keys_test -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 \
+        -DMELODEE_PHYS=1 -Ibuild/andamento/gen -Ifirmware/src -Itests || return
+    step "Andamento keys (platform/andamento/and_keys.c): SCALE, CHROM, STEP, MUTE, their RGB lights, ENERGY, activity" \
+        "$OUT/and_keys"
+}
+and_home() {                                      # (the headers as and_keys: web/andamento/build.sh --headers)
+    sh web/andamento/build.sh --headers > /dev/null || { fail "web/andamento/build.sh --headers"; return; }
+    build and_home and_home_test -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 \
+        -DMELODEE_PHYS=1 -Ibuild/andamento/gen -Ifirmware/src -Itests || return
+    mkdir -p build/oled/ppm
+    step "Andamento home (platform/andamento/and_home.c): HOME and NO, DEPTH, the 8 lanes, ENERGY's arc FREE and planned, a rest" \
+        "$OUT/and_home" build/oled
+    [ $PIL = 1 ] && { python3 tests/oled_render.py build/oled || fail "tests/oled_render.py"; }
+}
+and_ext() {                                       # (the headers as and_keys: web/andamento/build.sh --headers)
+    sh web/andamento/build.sh --headers > /dev/null || { fail "web/andamento/build.sh --headers"; return; }
+    build and_ext and_ext_test -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 \
+        -DMELODEE_PHYS=1 -Ibuild/andamento/gen -Ifirmware/src -Itests || return
+    mkdir -p build/oled/ppm
+    step "Andamento tracks 5..8 (platform/andamento/and_ext.c): MIDI 5..8, CV / gate, STOP, MUTE, ENERGY, keys, pages, 1..4 unchanged" \
+        "$OUT/and_ext" build/oled
+    [ $PIL = 1 ] && { python3 tests/oled_render.py build/oled || fail "tests/oled_render.py"; }
+}
+and_ui() {                                        # (the headers as and_keys: web/andamento/build.sh --headers)
+    sh web/andamento/build.sh --headers > /dev/null || { fail "web/andamento/build.sh --headers"; return; }
+    build and_ui and_ui_test -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 \
+        -DMELODEE_PHYS=1 -Ibuild/andamento/gen -Ifirmware/src -Itests || return
+    mkdir -p build/oled/ppm
+    step "Andamento screens (platform/andamento/and_ui.c): the page and dial screens on every page, their layout, a setting turned" \
+        "$OUT/and_ui" build/oled
+    [ $PIL = 1 ] && { python3 tests/oled_render.py build/oled || fail "tests/oled_render.py"; }
+}
+and_master() {                                    # (the headers as and_keys: web/andamento/build.sh --headers)
+    sh web/andamento/build.sh --headers > /dev/null || { fail "web/andamento/build.sh --headers"; return; }
+    build and_master and_master_test -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 \
+        -DMELODEE_PHYS=1 -Ibuild/andamento/gen -Ifirmware/src -Itests || return
+    step "Andamento master bus (platform/andamento/and_master.c): MIX 0 bit-identical, bypass, compressor, release, makeup, tilt, determinism" \
+        "$OUT/and_master"
+}
+and_texture() {                                   # (the headers as and_keys: web/andamento/build.sh --headers)
+    sh web/andamento/build.sh --headers > /dev/null || { fail "web/andamento/build.sh --headers"; return; }
+    build and_texture and_texture_test -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 \
+        -DMELODEE_PHYS=1 -Ibuild/andamento/gen -Ifirmware/src -Itests || return
+    step "Andamento texture engine (platform/andamento/and_texture.c): MIX 0 bit-identical, capture, FREEZE, DENS, AT_GRAINS bound, determinism" \
+        "$OUT/and_texture"
+}
+dsp_tracks() {
+    build hostsim hostsim -O2 $FW || return
+    step "DSP render (FM6 INIT VOICE)" "$OUT/hostsim" 12 24 1 "$OUT/render.wav"
+    mkdir -p build/tracks_demo
+    step "TRACKS: 4-track pattern, live recording (lengths, swing), voice budget, engine switch, cost" \
+        env TRACKS=build/tracks_demo "$OUT/hostsim" 12 24 1 "$OUT/tracks.wav"
+}
+phys_ref() {
+    D=${DAISYSP:-vendor/DaisySP}/Source
+    if [ ! -d "$D/PhysicalModeling" ] || ! command -v c++ >/dev/null 2>&1; then
+        echo "== skip PHYS reference test (no DaisySP: set DAISYSP to a checkout)"
+        return
+    fi
+    $CC -DMELODEE_LEGACY_EXTRAS=1 -O2 $FW -Itests -c -o "$OUT/phys_fixed.o" tests/phys_fixed.c &&
+        c++ -O2 -std=c++14 -w -I"$D" -I"$D/Utility" -o "$OUT/phys_ref" tests/phys_ref.cpp \
+            "$D/PhysicalModeling/modalvoice.cpp" "$D/PhysicalModeling/resonator.cpp" "$D/PhysicalModeling/stringvoice.cpp" \
+            "$D/PhysicalModeling/KarplusString.cpp" "$D/Filters/svf.cpp" "$D/Utility/dcblock.cpp" \
+            "$D/Dynamics/crossfade.cpp" "$OUT/phys_fixed.o" || { fail "compile tests/phys_ref.cpp"; return; }
+    step "PHYS: the fixed-point models against DaisySP's float originals (mode frequencies, decays, Svf)" "$OUT/phys_ref"
+}
+
+# ------------------------------------------------------------------ tests ---
+# the longest first: they set the length of the run
+sound && t "FX performance: all effects, four-track mixer, shared send bus and ordered three-effect chains" fx_performance -O2 $FW -- "$OUT/fx_performance" full
+sound && t "FX: three-slot chains, reverb decay/density/rate conversion, smooth Tape, track ownership, dry bypass and frozen legacy storage" fx_test -O1 $FW
+core && t "EQ accelerator: register layout, isolated histories and bounded timeout" eq_hw_test
+core && job web_tests
+sound && [ $TABLES = 1 ] && job dsp_tracks
+sound && [ $TABLES = 1 ] && run "sample rate: every engine in tune at 48 kHz as at 44.1 (FS, tools/gen_tables.py)" \
+    python3 tests/fs_test.py "$OUT/fs"
+
+if core; then
+    t "flash storage (A/B, torn writes)" storage_test
+    t "native FM6 user presets, scrolling, migration and interrupted saves" fm6_preset_test -O1 $FW
+    t "ORACLE: its sounds in range and playing, the pages, the patch in a project" oracle_test -O1 -DMELODEE_USB_AUDIO=1 $FW
+    t "resource lifetimes, cache eviction, tails and capacity" resources_test -O2 $FW
+    t "aligned libc: copy/clear bounds, ordering and float aliasing" libc_word_test -O2 -fstrict-aliasing
+    t "audio worker: stalled jobs and wrapping deadlines" audio_worker_test
+    t "CPU1 stop: delayed bus errors, guard and lock restoration" core1_stop_test
+    t "cache RAM startup, memory faults and safe fallback" cache_ram_test
+    t "system clock: read only, never written" clock_test -O1
+    t "stock V15 supply startup, timeouts and read-back faults" power_test -O1
+    job step "beta, nightly and synth-only site preserve release and editor" python3 tests/nightly_site_test.py
+    run "audio diagnostics schema compatibility" python3 tests/usb_audio_stats_test.py
+    run "target budget: natural loops and FPU decoding" python3 tests/target_budget_test.py
+    run "header messages: every literal fits the Mono header (15 characters)" python3 tests/msg_len_test.py
+    run "web simulator: the device's engine set" python3 tests/sim_flags_test.py
+    t "retired synth identities, project/user patch preservation and favorites" engine_retirement_test -O2 $FW
+    t "capture gating, derived caches and silent-track clocks" performance_test -DMELODEE_LEGACY_EXTRAS=1 -O2 $FW
+    t "canvas drawing overlaps DMA without changing pending pixels" lcd_overlap_test -O1 -w -Ibuild/gen
+    t "user presets (UP_PUT parser, bank round trip, versions, PHYS DRUM -> DRUM, grid records)" upreset_test
+    t "keys and buttons: fast press, long release, bouncy contacts (one note each), glitches, encoders, fast spins" input_test
+    t "LED hardware PWM: pin ownership, duty per scan, overlapping planes, blanking" led_pwm_test
+    t "TRS MIDI parser" midi_uart_test
+    t "USB audio: routing, clock drift and stream recovery" usb_audio_test
+    t "USB audio: endpoint lifecycle and packet ownership" usb_audio_driver_test
+    t "USB MIDI host: enumeration (direct, behind a hub, behind two), event filter, ring back-pressure, OUT, faults" usb_host_test -O1 -fsanitize=address,undefined
+    run "USB descriptors: MIDI, CDC and audio configurations" python3 tests/usb_audio_desc_test.py
+    run "boot images: LZMA records, decoder bounds, malformed streams and XIP dependencies" python3 tests/boot_audio_test.py
+    run "resident audio: call graph and flash/RAM ABI boundaries" python3 tests/audio_ram_test.py
+    run "stack budgets: callbacks, re-entry, inlined calls, nested IRQs and overflow rejection" python3 tests/stack_budget_test.py
+    t "removed effects: old songs and motion, MIDI, physical input and dry output" no_effects_test -O1 $FW
+    t "resident audio: four-track resource budget and removed buses" ram_audio_test -O2 $FW
+    t "resident audio: expanded voice budget and CPU1 fallback" ram_voice_budget_test -O2 $FW
+    t "load ceiling: a shed caps admission, recovers under 60 %, BUDGET stays the maximum (#586)" voice_ceiling_test -O2 $FW
+    t "audio: calibrated reservations, release tails and overlapping hits" audio_admission_test -O2 $FW
+    t "USB audio: four isolated track stems through the real mixer" usb_audio_tracks_test -O2 $FW
+    t "boot stub: CRCs, rescue keys, damaged staging and retry fallback" boot_stub_test -O2
+    run "boot packages: constant entry sector and valid directory CRCs" python3 tests/boot_stub_pkg_test.py
+    t "power cuts: every erase/page, resume and unchanged boot sector" loader_powercut_test -O2 -- powercut_tests
+    t "M-UPGRADE entry (own loader)" ota_test -DOWN_PKG=1 -- "$OUT/ota_test" build/tessera.fwsc
+    t "update loader: other app -> this build" ldr_test -- old_to_new
+    run "installer CLI (fm1_install.py) against a simulated FM-1" python3 tests/install_test.py
+    run "ROM USB recovery: backup, protected regions, interrupted writes and transport failures" python3 tests/recovery_test.py
+    run "recovery diagnostics: legacy and boot-protected retained RAM" python3 tests/retained_ram_test.py
+    run "release assets: firmware identity, application bytes, native provenance and ZIP integrity" python3 tests/release_assets_test.py
+    run "recovery correction: preserve signed firmware and verify public replacement assets" python3 tests/recovery_correction_test.py
+fi
+
+if core && [ $TABLES = 1 ]; then
+    t "scales: white-key mapping and note lifecycle" scale_test -O2 $FW
+    t "microtonal: catalogue, layouts, note ownership, recordings and rendered pitch" microtonal_test -O2 $FW
+    t "scale picker: families, favorites, empty lists, shared settings and navigation" scale_picker_test -O1 $FW
+    t "user tunings: checks, the catalogue's pitch as a slot, TUNING over SCL, the USER family, the project's part" tune_test \
+        -O1 $FW
+    t "USER scales: picked on the keys, QNT and a generator in one, the settings record, the project part, older firmware" \
+        uscale_test -O1 $FW
+    t "chord keys: diatonic and fixed chords, voicings, MONO root, releases, recording, ARP, MIDI IN, kits" chord_test $FW
+    t "motion, whole-step chance, an older parameter count, song restore and ARP repeat" motion_test -O1 $FW
+    t "32 pattern banks: chords, ties, independent loop switching, copy and persistence" pattern_test \
+        -O1 -DMELODEE_USB_AUDIO=1 $FW
+    t "recording/performance tools and legacy migrations" performance_tools_test -O1 $FW
+    t "USB/TRS clock, bend, sustain, ownership and panic recovery" midi_control_test -O1 $FW
+    t "MIDI OUT: steps, generators, ARP and keys per track channel, no echo, note-offs, clock out, settings" midi_out_test -O1 $FW
+    t "STEP DIR heard: PEND, FOLD, BACK play each step's own note; a TIE backwards plays once" seq_dir_test -O1 $FW
+    t "MIDI timing: quantized TRS/USB recording, audio timeline, tempo changes and timer wrap" midi_timing_test -O1 $FW
+    t "MIDI recording: raw events, quantization at take end, independent releases, banks and capacity" recording_test \
+        -O1 $FW
+    t "Recorded notes: individual selection/deletion, zoom, undo, playback ownership and persistence" seq_notes_test \
+        -O1 $FW
+    t "MIDI IN through the scale layouts (WHITE, ALL, MPC), shared SCL / QNT" midi_scale_test -O1 $FW
+    t "Concert pitch: A4 frequency, engines, modulation, held notes and project-independent settings" tuning_test \
+        -DMELODEE_LEGACY_EXTRAS=1 -O1 -DMELODEE_USB_AUDIO=1 $FW
+    t "themes: contrast, text blending and font metrics" theme_test -O1 $FW
+    t "text: pens, kerning and pixels equal the reference renderer" text_ref_test -O1 $FW
+    if [ $PIL = 1 ]; then
+        run "text spacing: glyph gaps against the font's own (16x supersampled), S M <= 0.25 px, L <= 0.5 px" \
+            python3 tests/text_spacing_test.py build/gen/ui_fonts.h
+    fi
+    t "settings: PER5 records, palette ids and preference preservation" settings_test -O1 -w -Ibuild/gen
+    # (ui_test's own checks still draw the detailed look: built with it until they are moved to Mono)
+    t "UI: sounds keep steps, undo, recording, MIDI overflow, pending saves, panel recovery, drum grid, song chain, MONO gray" \
+        ui_test -DMELODEE_USB_AUDIO=1 -DMELODEE_LOOK=0 $FW
+    t "UI, accessible build (MELODEE_ACCESS 1): no help cards, ARP held turns the knob, help_find still finds (MIDI LEARN)" \
+        ui_test_access:ui_test -DMELODEE_USB_AUDIO=1 -DMELODEE_LOOK=0 -DMELODEE_ACCESS=1 $FW
+    t "screen reader (MELODEE_ACCESS, ui_speak.c): silent until HELLO, the screen, pages, knobs, menu rows, messages, PLAY/STOP, WHERE" \
+        speak_test -DMELODEE_USB_AUDIO=1 -DMELODEE_LOOK=1 -DMELODEE_ACCESS=1 -Itests $FW
+    t "screen reader against the screen: every knob, every page, engine and MODE, said as drawn (tools/speak_screen.py)" \
+        speak_screen:speak_test -DMELODEE_USB_AUDIO=1 -DMELODEE_LOOK=1 -DMELODEE_ACCESS=1 -Itests $FW -- \
+        sh -c "\"$OUT/speak_screen\" compare \"$OUT/speak_screen.tsv\" && python3 tools/speak_screen.py \"$OUT/speak_screen.tsv\""
+    t "Sound designer: native recipes, dependencies, compare, discard and save" designer_test -O2 -DMELODEE_USB_AUDIO=1 $FW
+    t "Sequencer: tied length/move/delete, eight-level undo/redo, MIDI step entry and playing-step recording" seq_edit_test \
+        -DMELODEE_USB_AUDIO=1 $FW
+    t "Note/library gestures: quarter snapping, range moves/copies, undo and bulk preset erase" note_tools_test \
+        -O1 -DMELODEE_USB_AUDIO=1 $FW
+    job ui_renders
+    job oled_render
+    job and_keys
+    job and_home
+    job and_ext
+    job and_ui
+    job and_master
+    job and_texture
+    t "boot audio: codec waits for settled silent DMA and shuts down before I2S" audio_boot_test -w
+    t "audio: overload protection, bounded fades and DMA diagnostics" audio_test $FW
+    t "audio: silent bench keeps synthesis running and silences physical output" audio_silent_test:audio_test \
+        -DMELODEE_BENCH_SILENT=1 $FW
+    t "persistence: deferred settings, retry and failed-save rollback" persistence_test $FW
+    t "flash JEDEC gate: accepted parts (Puya, UCUN) enable writes, unknown IDs stay RAM-only" flash_id_test $FW
+    t "first boot: foreign settings, safe defaults, ownership and interrupted cleanup" settings_origin_test $FW
+    t "first boot: reset unsupported preset banks, preserve good entries and retry cuts" preset_boot_reset_test $FW
+    t "storage safety: protect unreadable records until confirmed replacement" storage_safety_test $FW
+    t "full backup: CRC before writes, stale runtime, USB reset / timeout, malformed objects, older projects" backup_test $FW
+    t "demo and test projects (demos/, demos/checks/): made, saved, backed up, loaded and played; the shipped ones load; put into a backup" \
+        demo_projects -O2 $FW -DMELODEE_PHYS=0 -DTRK_START_TESS=1 -- demo_tests
+    t "engines off (PHYS, CZ-1, ORACLE left out; SID and MACRO removed): never offered, their tracks FM6's first voice, the parts play" \
+        engine_switch_fm:engine_switch_test $FW -DMELODEE_PHYS=0 -DMELODEE_CZ=0 -DMELODEE_ORACLE=0
+    t "editor: real C protocol, malformed transfers and queue recovery" editor_test $FW
+    t "DX7 librarian: USB voice/bank receive, dump replies and malformed frame recovery" fm6_sysex_test $FW
+    t "SWING: track + global at most 100, sequencer step lengths, the SWG display" swing_test -O2 $FW
+    t "upgrade: a project with a generator on each track saved, booted, loaded (tests/upgrade_check.sh: from an older build)" \
+        upgrade_test -O1 $FW
+    mkdir -p build/tessera_log
+    t "TESSERA generators: notes per scenario against tests/tessera_baseline.txt, stops clean, saved block" tessera_test \
+        -O2 $FW -- "$OUT/tessera_test" tests/tessera_baseline.txt build/tessera_log
+    t "FORM CHAIN: the project's FORM on the bar clock: order, counts, FOLLOW / OWN, SKIP, WANDER, OFF unchanged" \
+        chain_test -O2 $FW
+    t "ENTRIES: tracks out and back on the phrase lines: the rules, DWELL, anchors, breakdowns, CUT / FADE, hand, OFF unchanged" \
+        entries_test -O2 $FW
+    t "SPLIT: TIMING's SPLIT: DOUBLE, PUSH, MIX on generators, STEP and drums; SPLIT 0 and a generator's own notes unchanged" \
+        split_test -O1 $FW
+    t "FOLLOW: HOW and RHYTHM on a STEP melody: SAME / OWN unchanged, SOURCE, BOTH, CHORD, CONTRA, BASS, CANON; a muted lead" \
+        follow_test -O1 $FW
+    t "CLOCK cord: a generator stepped by its CLOCK cord: replaced DIV, PLAY, division, edge, hits, wait, STOP; no cord unchanged" \
+        cordclock_test -O1 $FW
+    t "RECIPES: GENERATIVE.md's Krell and Long gates played: a note each LFO cycle; a voice in and out with a bus's sum"         recipes_test -O2 $FW
+    t "PIECE: the planner: the SHAPEs, FREE unchanged, ENERGY / Entries / the CHAIN steered, END STOP LOOP NEW FREE, tempo" \
+        planner_test -O2 $FW
+    t "GEN: each generator on its own (gen.c alone): ranges, rests, draws per step, determinism, mutation, sections" \
+        gen_test -O2 $FW
+    t "LONG-FORM: 8 hours of 10 patches: no long silence, one-note collapse, frozen loop or thinning out" longform_test \
+        -O2 $FW -- env LF_JOBS=2 "$OUT/longform_test" 8 build/longform_report.txt
+    t "PARAMETER IDS: every setting numbered, ranges, get/set, frozen against tests/pid_ids.txt" pid_test \
+        -O1 $FW -- "$OUT/pid_test" tests/pid_ids.txt docs/PARAMETERS.md
+    t "HELP: the device's packed help texts expand to pid.c's (tools/gen_help.py)" help_pack_test -O1 $FW
+    t "TABLES: the computed readouts (TIME, LFO Hz, CUTOFF, dB) equal the tables they replace" tables_test -O1 $FW
+    t "CORDS: the destination table, frozen against tests/cord_dests.txt" cord_test \
+        -O1 $FW -- "$OUT/cord_test" tests/cord_dests.txt
+    t "double-tap layers, SCREEN OFF, LFO 2 SYNC / TRIG / POL; MODS scrolled, FX + knobs, MODS AMOUNT, DIR sheet: no pixel sent twice" layer_screen_test \
+        -O1 -DMELODEE_USB_AUDIO=1 $FW
+    t "DRUM EDITOR: synthesized 909, sound controls, individual pitch/length, undo and storage" drum_editor_test -O2 $FW
+fi
+
+if sound && [ $TABLES = 1 ]; then
+    mkdir -p build/mod_demo \
+        build/phys_demo build/drum_demo build/noise_demo build/fm6_demo
+    t "regression: golden renders, health, voices, CPU budget" regress -O2 $FW -- \
+        "$OUT/regress" tests/golden.txt tests/cpu_baseline.txt
+    t "PHYS: stability C-1..G9 over the parameter corners, worst-case cost against FM6 DRAWBARS, demos" phys_test \
+        -DMELODEE_LEGACY_EXTRAS=1 -O2 $FW -- "$OUT/phys_test" build/phys_demo
+    t "paired FM6 voices: serial/concurrent sample equality, a worker retired mid-song" dual_core_test \
+        -O2 $FW -pthread
+    t "audio: 1296 ordered engine assignments, releases, controls and concurrent PCM parity" audio_matrix_test -O2 $FW -pthread
+    t "native fp32: FM6 against an independent reference, exact pitch" synth_fpu_test \
+        -O2 $FW
+    t "modulation matrix: off = bit-identical, the math, MIDI CC1 / CC11 / aftertouch, cost, demos" mod_test \
+        -DMELODEE_LEGACY_EXTRAS=1 -O2 $FW -- "$OUT/mod_test" build/mod_demo
+    t "matrix S&H / SLEW / DEPTH, SPREAD: off = bit-identical, stereo sides and routing" mod_spread_test -O2 $FW
+    job phys_ref
+    t "DRUM: 808 instruments, velocity, hat choke, release, eight lanes and shared voice budget" drum_test -O2 $FW -- \
+        "$OUT/drum_test" build/drum_demo
+    t "NOISE: colour slopes, key-tracked filter and clock, META period, DC, clipping, retrigger, cost, demos" noise_test \
+        -DMELODEE_LEGACY_EXTRAS=1 -O2 $FW -- "$OUT/noise_test" build/noise_demo
+    t "FM6: the DX7's algorithms, pitch, levels, envelopes, modulation; DC, clipping, macros, patches, voices, cost, demos" \
+        fm6_test -O2 $FW -- "$OUT/fm6_test" build/fm6_demo
+    t "FM6: native fp32 AMS against the double reference, every modulation" fm6_ams_test -O2 $FW
+    if [ -n "${DEXED_SRC:-}" ]; then
+        run "FM6 vs Dexed: informational fp32 render comparison (DEXED_SRC)" sh tests/fm6_parity.sh --quick --diagnostic
+    else
+        note "== FM6 vs Dexed: skipped (DEXED_SRC=<dexed>/Source to run tests/fm6_parity.sh)"
+    fi
+fi
+if sound; then
+    run "regression: target cost of the render loops (pi32v2 disassembly)" python3 tests/target_budget.py \
+        build/melodee.dis tests/target_budget.txt
+fi
+[ $TABLES = 1 ] || note "== skip hostsim (run ./build.sh once)"
+
+# every slot back: every job ended
+i=0; while [ $i -lt "$PARALLEL" ]; do read -r slot <&3; flush; i=$((i + 1)); done
+wait
+flush
+exec 3>&-
+secs=$(($(date +%s) - start))
+case $SOUND in
+    1) what="ALL HOST TESTS" ;;
+    0) what="HOST TESTS (sound tests skipped: SOUND=0)" ;;
+    only) what="SOUND TESTS (SOUND=only)" ;;
+esac
+# QUICK is not the gate: its line never says ALL
+[ "$QUICK" = 1 ] && what="QUICK HOST TESTS ($n jobs for the changed files; the full suite is the gate before a PR)"
+if [ -s "$LOG/failed" ]; then
+    echo "$what FAILED in $secs s:"
+    sed 's/^/  /' "$LOG/failed"
+    exit 1
+fi
+echo "$what PASSED in $secs s"

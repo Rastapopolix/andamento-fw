@@ -1,0 +1,101 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Kerem Kilic (Ellic Studio)
+ * Portions Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
+#define MELODEE_FAVORITES 1
+/* Stable engine/preset references; fixed capacity independent of optional engines.
+ * Bytes no engine's presets reach hold other settings, kept with the favorites (settings_persist.c):
+ *   row 8  (GRAIN, retired; Felucca 1.0's stars in bits 0..11) 4..7 tagged USB VOLUME (settings_persist.c),
+ *          8..15 the USER scales (uscale.h, settings_persist.c), 16..25 the FX key map, 26 tagged KNOBS BAR (ui.c), 27 tagged NOTE PREVIEW OFF,
+ *          28..31 its tag (below)
+ *   row 14 (OBXF, retired; its old stars in 0..15)             16..27 the scale favorites, 28..31 their tag
+ *   row 15 (CZ-1: factory tones bits 0..64, native slots 65..192) 26 tagged USB OUTPUT (was USB INPUT) (settings_persist.c), 27 SCREEN OFF,
+ *          28 tagged AUTOSAVE OFF, 29 the PRESETS LIST (browse.c),
+ *          30 bit 0 retired, bit 1 KNOB ACCEL OFF (ui.c PREF_BITS), bits 2..4 retired (OVERCLOCK until 1.3.4),
+ *             bits 5..6 MIDI OUT, bit 7 CLOCK OUT (midi_out.c, settings_persist.c),
+ *          31 the quick layers seen (ui_layer.c), 25 tagged TRACK KNOB LEFT (panel.c), 24 bits 1..3 PANEL GAMMA (gamma_get),
+ *             bit 4 MIDI CC IN OFF (midi_cc.c), bit 5 BATTERY WHEN LOW (core.h), bits 6..7 MUTES
+ *             (NOW BAR PHRASE, entries.c)
+ *   row 0 bytes 2..27 hold all 201 Prophet factory stars, tagged in bytes 28..31;
+ *         bytes 0..1 held retired ANALOG's stars.
+ *   row 1 bytes 28..31 mark validated Melodee settings (MDS + version 1).
+ * Rows 1 (DIGITAL, retired), 4 (SAMPLE) and 13 (SLICE, built with MELODEE_SLICE) may hold Felucca 1.0's stars; 6, 7, 9 are LEGACY_EXTRAS' engines. Native FM6 slots: row 12 bits 24..87. */
+typedef struct {
+    uint8_t factory[16][32]; /* engine 0..15, preset 0..255 */
+    uint32_t user, filter;
+} favorites_t;
+static favorites_t favorites;
+static uint32_t favorites_user_hi;
+/* MENU > PANEL GAMMA (lcd.c lcd_gamma): favorites row 15 byte 24 bits 1..3 (above; bit 0 is a CZ-1 star).
+ * 0 is the default, G2.2, so settings saved before it get it; n the option n - 1 (6: TUNED+VCOM). Until 2.1-rc2
+ * 0 was TUNED+VCOM, the default then: a panel left on it moves to G2.2 (Theo, 2026-10-26) */
+#define GAMMA_N 6u
+#define GAMMA_DEF 0u                                   /* G2.2 */
+static uint32_t gamma_get(void)
+{
+    uint32_t v = (favorites.factory[15][24] >> 1) & 7u;
+    return v && v <= GAMMA_N ? v - 1u : GAMMA_DEF;
+}
+static void gamma_put(uint32_t opt)
+{
+    favorites.factory[15][24] = (uint8_t)((favorites.factory[15][24] & ~0x0Eu) |
+                                          (opt < GAMMA_N && opt != GAMMA_DEF ? (opt + 1u) << 1 : 0u));
+}
+
+/* Scale favorites use the upper half of retired engine 14's PER5 row. Keep
+ * old preset bits 0..127 intact; tagged storage ignores unrecognized bytes.
+ * No settings/template layout change. */
+#define SCALE_FAV_CAP 96u
+static int scale_fav_valid(void)
+{
+    const uint8_t *p = favorites.factory[14];
+    return p[28] == 'S' && p[29] == 'C' && p[30] == 'L' && p[31] == 1;
+}
+static int scale_favorite(uint32_t scale)
+{
+    return scale < SCALE_FAV_CAP && scale_fav_valid() &&
+        ((favorites.factory[14][16u + scale / 8u] >> (scale % 8u)) & 1u);
+}
+static int scale_favorite_set(uint32_t scale, int on)
+{
+    if (scale >= SCALE_FAV_CAP || scale_favorite(scale) == !!on) return 0;
+    uint8_t *p = favorites.factory[14];
+    if (!scale_fav_valid()) {
+        memset(p + 16, 0, 12);
+        p[28] = 'S'; p[29] = 'C'; p[30] = 'L'; p[31] = 1;
+    }
+    if (on) p[16u + scale / 8u] |= (uint8_t)(1u << (scale % 8u));
+    else p[16u + scale / 8u] &= (uint8_t)~(1u << (scale % 8u));
+    return 1;
+}
+/* FM6's presets after INIT VOICE (ZEN-1's, 25..) keep their bits clear of the native slots' (24 + 0..63): 89.. */
+static uint32_t fav_fm6(uint32_t engine, uint32_t preset) { return engine == ENGI_FM6 && preset > FM6_NFAC ? preset + 64u : preset; }
+static int favorite_has(uint32_t engine, uint32_t preset)
+{
+    preset = fav_fm6(engine, preset);
+    if(engine==USER_NATIVE_CZ || engine==USER_NATIVE_P5)return 0;             /* (the CZ-1's and the Prophet's: retired) */
+    if(engine==USER_NATIVE_FM){if(preset>=64u)return 0;preset+=24u;engine=ENGI_FM6;}
+    if (engine == USER_GENERAL)
+        return preset < UP_SLOTS && (((preset < 32u ? favorites.user : favorites_user_hi) >> (preset % 32u)) & 1u);
+    return engine < NENGINES && engine < 16u && preset < 256u &&
+        ((favorites.factory[engine][preset / 8u] >> (preset % 8u)) & 1u);
+}
+static int favorite_set(uint32_t engine, uint32_t preset, int on)
+{
+    preset = fav_fm6(engine, preset);
+    if(engine==USER_NATIVE_CZ || engine==USER_NATIVE_P5)return 0;
+    if(engine==USER_NATIVE_FM){if(preset>=64u)return 0;preset+=24u;engine=ENGI_FM6;}
+    if (engine >= NENGINES || (engine == USER_GENERAL ? preset >= UP_SLOTS : engine >= 16u || preset >= 256u))
+        return 0;
+    if ((engine == USER_GENERAL ? favorite_has(engine, preset) :          /* (the bit itself: preset is mapped) */
+         (favorites.factory[engine][preset / 8u] >> (preset % 8u)) & 1u) == !!on) return 0;
+    if (engine == USER_GENERAL) {
+        uint32_t *word = preset < 32u ? &favorites.user : &favorites_user_hi;
+        if (on) *word |= 1u << (preset % 32u);
+        else *word &= ~(1u << (preset % 32u));
+    } else {
+        uint8_t *b = &favorites.factory[engine][preset / 8u];
+        if (on) *b |= (uint8_t)(1u << (preset % 8u));
+        else *b &= (uint8_t)~(1u << (preset % 8u));
+    }
+    return 1;
+}

@@ -1,0 +1,226 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+#include "../firmware/src/tuning.h"
+#define __attribute__(x)
+#define NENGINES 20u
+#define USER_GENERAL 16u
+#define USER_NATIVE_P5 20u
+#define ENGI_PROPHET 19u
+#define UP_SLOTS 64u
+#define USER_NATIVE_FM 17u
+#define USER_NATIVE_CZ 18u
+#define ENGI_FM6 12u
+#define FM6_NFAC 24u                 /* (eng_fm6.c: F1..F24, INIT VOICE, then ZEN-1's) */
+#define ENGI_CZ 15u
+static void fm1_led_key(unsigned k, int on) { (void)k; (void)on; }
+static int fm1_enc_take(unsigned k) { (void)k; return 0; }
+static void lcd_sync(void) {}
+static void lcd_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint16_t c) { (void)x; (void)y; (void)w; (void)h; (void)c; }
+static void lcd_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint16_t *p)
+{ (void)x; (void)y; (void)w; (void)h; (void)p; }
+#include "../firmware/src/gfx.c"
+#include "../firmware/src/panel.c"
+static void settings_save(void) {}
+static uint8_t settings_boot, settings_drumch = 0;   /* (params.c) */
+enum { MIDI_OUT_KEYS, MIDI_OUT_ALL, MIDI_OUT_OFF, MIDI_OUT_N };
+static uint8_t settings_midi_out, settings_clock_out;     /* (midi_out.c) */
+static uint8_t settings_cc_off;                           /* (midi_cc.c) */
+static uint8_t settings_batt_off;                         /* (core.h: MENU BATTERY) */
+static uint8_t settings_mute_q;                           /* (core.h: MENU MUTES) */
+#define VOICE_BUDGET_DEFAULT 16u
+static int16_t settings_budget=VOICE_BUDGET_DEFAULT;
+static int native_used(uint32_t e, uint32_t k) { (void)e; (void)k; return 0; }
+#if __has_include("../firmware/src/favorites.c")
+#include "../firmware/src/favorites.c"
+#endif
+#include "../firmware/src/settings_persist.c"
+int main(void)
+{
+    persist_t original = {0}, p;
+    {   /* Device workload budget shares tagged high USB bits, never its low flags. */
+        persist_t q={0};q.magic=PERSIST_MAGIC;q.panel=PANEL_DEFAULT;
+        for(uint32_t usb=0;usb<4u;usb++)for(int16_t points=8;points<=32;points++){
+            q.ext.usb_off=usb;settings_budget=points;settings_export(&q);
+            assert((q.ext.usb_off&3u)==usb && sizeof q==604u);
+            settings_budget=0;assert(settings_import(&q,sizeof q) && settings_budget==points);
+        }
+        q.ext.usb_off=WORK_BUDGET_TAG|(7u<<8)|2u;
+        assert(settings_import(&q,sizeof q) && settings_budget==VOICE_BUDGET_DEFAULT && q.ext.usb_off==2u);
+        q.ext.usb_off=0;assert(settings_import(&q,sizeof q) && settings_budget==VOICE_BUDGET_DEFAULT);
+    }
+    original.magic = PERSIST_MAGIC;
+    original.palette = 4; original.bold = original.lowcut = original.zoom = 1;   /* an untagged id: the default */
+    original.panel = PANEL_DEFAULT; original.panel.enc[0] = 3;
+    original.favorites.factory[8][0] = 1;
+    original.favorites.user = 1u << 31; original.favorites.filter = 1;
+    p = original;
+    assert(settings_import(&p, sizeof p) == 1); settings_init();
+    assert(settings.palette == UI_DEFAULT_INDEX && !settings.lowcut && settings.zoom && panel.enc[0] == 3);
+    assert(p.palette == palette_to_stored(UI_DEFAULT_INDEX));
+    {   /* tagged ids round trip; any other id (the untagged ones of before 1.0 too) is the default */
+        persist_t q = original;
+        for (uint32_t i = 0; i < NPALETTES; i++) assert(palette_from_stored(palette_to_stored(i)) == i);
+        for (uint32_t i = 0; i < 72u; i++) assert(palette_from_stored(i) == UI_DEFAULT_INDEX && !palette_stored_ok(i));
+        assert(palette_stored_ok(palette_to_stored(3)));
+        assert(palette_stored_ok(UI_PAL_TAG + 1u) && palette_from_stored(UI_PAL_TAG + 1u) == UI_DEFAULT_INDEX);  /* DAY */
+        assert(palette_to_stored(UI_DEFAULT_INDEX) == UI_PAL_TAG + 3u);       /* SMALTI keeps its stored id */
+        q.palette = palette_to_stored(2);
+        assert(settings_import(&q, sizeof q) == 1 && settings.palette == 2u);
+        p = original; assert(settings_import(&p, sizeof p) == 1); settings_init();
+    }
+#ifdef MELODEE_FAVORITES
+    assert(favorite_has(8, 0) && favorite_has(USER_GENERAL, 31) && favorites.filter);
+#endif
+    favorite_set(USER_NATIVE_FM,63,1);favorite_set(USER_NATIVE_CZ,127,1);favorite_set(USER_GENERAL,63,1);
+    settings_export(&p);memset(&favorites,0,sizeof favorites);favorites_user_hi=0;settings_import(&p,sizeof p);
+    assert(favorite_has(USER_NATIVE_FM,63) && !favorite_has(USER_NATIVE_CZ,127) && favorite_has(USER_GENERAL,63));   /* (no CZ-1 pool) */
+    assert(!favorite_has(USER_NATIVE_FM,64) && !favorite_has(USER_NATIVE_CZ,128));
+    p=original;settings_import(&p,sizeof p);
+    {
+        uint8_t legacy[16]; memset(favorites.factory[14], 0xA5, 32);
+        memcpy(legacy, favorites.factory[14], sizeof legacy);
+        assert(!scale_favorite(0) && !scale_favorite(69));
+        assert(scale_favorite_set(0, 1) && scale_favorite_set(69, 1) && scale_favorite_set(95, 1));
+        assert(!scale_favorite_set(96, 1) && !scale_favorite_set(69, 1));
+        assert(!memcmp(legacy, favorites.factory[14], sizeof legacy));
+        settings_export(&p); memset(&favorites, 0, sizeof favorites); settings_import(&p, sizeof p);
+        assert(scale_favorite(0) && scale_favorite(69) && scale_favorite(95));
+        assert(scale_favorite_set(69, 0) && !scale_favorite(69) && scale_favorite(95));
+        p=original;settings_import(&p,sizeof p);
+    }
+    {   /* PANEL GAMMA: row 15 byte 24 bits 1..3; 0 (any settings before it, and TUNED+VCOM until 2.1-rc2) G2.2; bit 0, a CZ-1 star, kept */
+        assert(gamma_get() == GAMMA_DEF);
+        favorites.factory[15][24] = 0x01u;                       /* (bit 4: MIDI CC IN, midi_cc.c; bit 5: BATTERY; 6..7 MUTES) */
+        for (uint32_t g = 0; g < GAMMA_N; g++) {
+            gamma_put(g);
+            settings_export(&p); memset(&favorites, 0, sizeof favorites); settings_import(&p, sizeof p);
+            assert(gamma_get() == g && (favorites.factory[15][24] & 0x01u) == 0x01u);
+        }
+        gamma_put(GAMMA_DEF); assert(!(favorites.factory[15][24] & 0x0Eu));      /* the default stores 0 */
+        gamma_put(5u); assert(((favorites.factory[15][24] >> 1) & 7u) == 6u);    /* TUNED+VCOM chosen: 6 */
+        for (uint32_t v = 1; v <= 5u; v++) {           /* saved before 2.1-rc2: 1..5 G2.2..TUNED as before */
+            favorites.factory[15][24] = (uint8_t)(v << 1); assert(gamma_get() == v - 1u);
+        }
+        favorites.factory[15][24] = 7u << 1; assert(gamma_get() == GAMMA_DEF);   /* unknown: the default */
+        p=original;settings_import(&p,sizeof p);
+    }
+    settings.lowcut = 0;
+    settings_export(&p);
+    assert(!p.lowcut && p.bold == 1 && p.favorites.user == (1u << 31));   /* bold: kept as saved */
+    assert(p.favorites.factory[8][0] == 1 && p.favorites.filter == 1);
+    assert(p.panel.enc[0] == 3); /* saving one feature preserves the other */
+    {   /* A4 shares PER5's last spare word; old and malformed records use 440 Hz. */
+        persist_t q = original;
+        assert(tuning_a4 == 440);
+        tuning_a4 = 432;
+        settings_export(&q);
+        assert(q.ext.spare[1] == (A4_TAG | 432u));
+        tuning_a4 = 480;
+        assert(settings_import(&q, sizeof q) == 1 && tuning_a4 == 432);
+        for (uint32_t hz = A4_MIN; hz <= A4_MAX; hz++) {
+            tuning_a4 = (int16_t)hz; settings_export(&q);
+            tuning_a4 = 0;
+            assert(settings_import(&q, sizeof q) == 1 && tuning_a4 == (int16_t)hz);
+        }
+        const uint32_t invalid[] = {0u, 432u, 0xFFFFFFFFu, A4_TAG | 399u, A4_TAG | 481u};
+        for (uint32_t k = 0; k < sizeof invalid / sizeof invalid[0]; k++) {
+            q.ext.spare[1] = invalid[k]; tuning_a4 = 432;
+            assert(settings_import(&q, sizeof q) == 1 && tuning_a4 == 440);
+        }
+        p = original; settings_import(&p, sizeof p);
+    }
+    {   /* AUTOSAVE: default ON for old/unknown bytes, tagged OFF survives a settings round trip. */
+        persist_t q = original;
+        assert(settings_autosave);
+        settings_autosave = 0;
+        settings_export(&q);
+        assert(sizeof q == 604u && q.favorites.factory[15][28] == AUTOSAVE_OFF_TAG);
+        settings_autosave = 1;
+        assert(settings_import(&q, sizeof q) && !settings_autosave);
+        settings_autosave = 1;
+        settings_export(&q);
+        settings_autosave = 0;
+        assert(settings_import(&q, sizeof q) && settings_autosave);
+        for (uint32_t byte = 0; byte < 256u; byte++) {
+            q.favorites.factory[15][28] = (uint8_t)byte;
+            assert(settings_import(&q, sizeof q) && settings_autosave == (byte != AUTOSAVE_OFF_TAG));
+        }
+        p = original; settings_import(&p, sizeof p);
+    }
+    {   /* records before PER5 (Felucca's PER1..PER4; 1.2 rewrote them) and short ones: not read */
+        const uint32_t magic[4] = {0x50455231u, 0x50455232u, 0x50455233u, 0x50455234u};
+        for (uint32_t k = 0; k < 4u; k++) {
+            p = original; p.magic = magic[k];
+            assert(!settings_import(&p, sizeof p) && !settings_import(&p, (int)(sizeof p - sizeof p.ext)));
+        }
+        p = original;
+        assert(!settings_import(&p, (int)sizeof p - 1));
+    }
+    settings_drumch = 0; settings_export(&p);        /* DRUM OFF (the default since 3.3.1): 0 in the record */
+    assert(p.ext.drumch == 0u && settings_import(&p, sizeof p) == 1 && !settings_drumch);
+    settings_drumch = 10; settings_export(&p); assert(p.ext.drumch == 10u);   /* 10: written as 10 */
+    settings_drumch = 3; assert(settings_import(&p, sizeof p) == 1 && settings_drumch == 10u);
+    p.ext.drumch = 17u;                              /* an older record's OFF */
+    settings_drumch = 3; assert(settings_import(&p, sizeof p) == 1 && !settings_drumch);
+    p = original; p.ext.usb_off = 2;                /* PER5: ext kept by a build without USB audio */
+    assert(settings_import(&p, sizeof p) == 1 && p.ext.usb_off == 2u);
+    settings_export(&p); assert(p.ext.usb_off == 2u);
+    {   /* HOLD: in the retired bold field; older records (bold 0 / 1) are 0.4 s, and stay as saved */
+        p = original; p.bold = 0;
+        assert(settings_import(&p, sizeof p) == 1 && settings_hold == HOLD_DEF && HOLD_MS[settings_hold] == 400u);
+        p = original;
+        assert(settings_import(&p, sizeof p) == 1 && settings_hold == HOLD_DEF);
+        settings_hold = 3;
+        settings_export(&p);
+        assert(hold_stored_ok(p.bold) && p.bold != 1u);
+        settings_hold = 0;
+        assert(settings_import(&p, sizeof p) == 1 && settings_hold == 3u && HOLD_MS[settings_hold] == 600u);
+        settings_hold = HOLD_DEF;
+        settings_export(&p);
+        assert(p.bold == 0u && settings_import(&p, sizeof p) == 1 && settings_hold == HOLD_DEF);
+        assert(!hold_stored_ok(2u) && !hold_stored_ok(HOLD_TAG + 4u) && hold_stored_ok(HOLD_TAG | 2u));
+    }
+#if MELODEE_LOOK
+    {   /* GROUND (#557): LIGHT tagged in row 8 byte 29, the palette id as it was (older firmware keeps the ink on black);
+         * any other byte DARK; LIGHT takes each palette's light inks on paper, DARK the palette exactly */
+        uint32_t i, j;
+        p = original; p.palette = palette_to_stored(3);
+        assert(settings_import(&p, sizeof p) == 1 && !ux_ground);
+        ux_ground = 1;
+        settings_export(&p);
+        assert(p.favorites.factory[8][29] == GROUND_LIGHT_TAG && p.palette == palette_to_stored(3));
+        ux_ground = 0;
+        assert(settings_import(&p, sizeof p) == 1 && ux_ground && settings.palette == 3u);
+        p.favorites.factory[8][29] = 0x01u;
+        assert(settings_import(&p, sizeof p) == 1 && !ux_ground);
+        for (i = 0; i < NPALETTES; i++) {
+            ux_ground = 1; palette_set(i);
+            assert(T_BG == UI_LIGHT_BG && ux.light && T_TEXT == pal_light(i, 0) && T_ACCENT == pal_light(i, 4));
+            for (j = 0; j < 4u; j++) assert(T_TRK(j) == pal_light(i, j));
+            if (UI_PALETTES[i].trk[0] != UI_PALETTES[i].trk[1])   /* a MOSAIC: its four light inks all different */
+                assert(T_TRK(0) != T_TRK(1) && T_TRK(0) != T_TRK(2) && T_TRK(0) != T_TRK(3) && T_TRK(1) != T_TRK(2) &&
+                       T_TRK(1) != T_TRK(3) && T_TRK(2) != T_TRK(3));
+            if (str_eq(UI_PALETTES[i].name, "RED") || str_eq(UI_PALETTES[i].name, "HOT PINK"))   /* COLOR: as PINK */
+                assert(str_eq(UI_PALETTES[pal_shown(i)].name, "PINK") && str_eq(pal_name(i), "PINK") &&
+                       T_TEXT == pal_light(pal_shown(i), 0));
+            else if (str_eq(UI_PALETTES[i].name, "ORANGE"))   /* COLOR: as YELLOW */
+                assert(str_eq(pal_name(i), "YELLOW") && T_TEXT == pal_light(pal_shown(i), 0));
+            else
+                assert(pal_shown(i) == i && str_eq(pal_name(i), str_eq(UI_PALETTES[i].name, "WHITE") ? "BLACK" :
+                                                                UI_PALETTES[i].name));
+            if (str_eq(UI_PALETTES[i].name, "WHITE"))   /* WHITE on paper: pure black */
+                assert(T_TEXT == 0x0000u);
+            ux_ground = 0; palette_set(i);
+            assert(pal_shown(i) == i && str_eq(pal_name(i), UI_PALETTES[i].name));
+            assert(T_BG == UI_PALETTES[i].bg && T_TEXT == UI_PALETTES[i].text && !ux.light);
+            for (j = 0; j < 4u; j++) assert(T_TRK(j) == UI_PALETTES[i].trk[j]);
+        }
+    }
+#endif
+    assert(settings_import(&p, 3) == 0 && settings_import(&p, -1) == 0);
+    assert(settings_import(&p, sizeof p - 1) == 0);
+    puts("Settings: PER5 only, palette ids, calibration, HOLD, AUTOSAVE, GROUND, ext and independent feature preservation passed.");
+}

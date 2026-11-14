@@ -1,0 +1,777 @@
+/* SPDX-License-Identifier: GPL-3.0-only
+ * Copyright (C) 2026 Leo Kuroshita (@kurogedelic), Hügelton Instruments */
+/* Melodee quick layers: while a page button is held, the keys and KNOB 1..4
+ * are its shortcuts and its map shows over the page. One table (LAYERS) drives the gesture, the keys, the knobs,
+ * the LEDs and the overlay:
+ *   GLO  SET   black keys 1..4 (F#3 G#3 A#3 C#4) T1..T4 MUTE (latched; lit = sounding), F3..B3 SOLO T1..T4 while
+ *              held (HOLD cells, a corner triangle), C4 UNMUTE ALL, E4 FILL while held (conditional steps), F4 TAP
+ *              tempo; KNOB 1..4 T1..T4 LEVEL;
+ *              GLO + PLAY: from the top without stopping
+ *   SCL  SET   any key: its note name is ROOT; KNOB 1..4 ROOT SCL CHRD VOIC (LY_SCL: the SCL page's first two,
+ *              the CHORD page's two; QNT TRN stay on SCL); the LEDs show the root lit and the scale's notes blinking
+ * The gesture: let go before HOLD (the menu: 0.3 .. 0.6 s) with nothing else touched: a tap, the button's page.
+ * Held past HOLD alone: the map (a peek), letting go does nothing. A key, a knob or a button meanwhile: a combo,
+ * the map at once, no tap. Keys pressed with the button down are the layer's (seq.c keyboard_block): silent, no
+ * MIDI, never recorded; keys held before stay notes. Only one layer at a time: a second layer button is ignored.
+ * PLAY and REC work in every layer (GLO + PLAY: RESTART); SAVE, HOME, SEQ and the other page buttons are swallowed. In SET
+ * layers OCT± do not shift the octave: OCT- (on release, not with OCT+) puts back what the layer changed since it
+ * opened. A HOLD key's effect lasts until the key is let go, the map with it. No layer in the menu, a dialog,
+ * NAME or the UPDATE MODE countdown. After a tap, until the layer has been opened once: "HOLD [GLO] SET"
+ * (the seen bits are kept with the settings, favorites.c spare byte). */
+enum { LK_HOLD, LK_SET };
+typedef struct {
+    uint8_t btn, kind, fam;            /* the button, HOLD / SET, the family whose first page KNOB 1..4 edit */
+    const char *head;                  /* (FAM_HOME: the layer's own knobs) the header over the map */
+    khint_t foot[3];                   /* the footer's key hints (a third with no word: none) */
+} layer_t;
+static const layer_t LAYERS[LAYER_N] = {
+    {0, 0, 0, "", {{0, 0}, {0, 0}, {0, 0}}},
+    {0, 0, 0, "", {{0, 0}, {0, 0}, {0, 0}}},
+    {B_GLO, LK_SET, FAM_HOME, "[GLO] SET", {{KC_PLAY, "RESTART"}, {KC_OCTDN, "UNDO"}, {KC_GLO, "DONE"}}},
+    {B_SCL, LK_SET, FAM_SCL, "[SCL] SET", {{KC_KEYS, "ROOT"}, {KC_OCTDN, "UNDO"}, {KC_SCL, "DONE"}}},
+};
+static const uint8_t LY_KC[LAYER_N] = {0, 0, KC_GLO, KC_SCL};
+/* SCL's knobs: the key and its chord (cur_page() while the layer edits or draws them: page_over) */
+static const page_t LY_SCL = {"SCL", FAM_SCL, SC_TRACK, GR_SCALE, {P_ROOT, P_SCALE, P_CHRD, P_VOIC}};
+#define LY_OPEN 2u                     /* ui.ly_t0: the map opened (no tap any more) */
+#define LY_COMBO 4u                    /* .. by a combo */
+#define LY_DEAD 8u                     /* .. pressed where there is no layer: does nothing */
+#define layer_seen (favorites.factory[15][31])   /* bit l: layer l opened once (a byte no engine uses) */
+
+static struct {
+    uint8_t l, trk, oct;               /* SET: layer, snapshot track, OCT- / OCT+ pressed (bits) */
+    int16_t v[9];                      /* the values when it opened: GLO mutes, levels, BPM; SCL ROOT..TRN, CHRD VOIC */
+    uint32_t solo;                     /* GLO: the keys held that solo */
+    uint32_t fill;                     /* GLO: E4 held, FILL (seq.c seq_fill) */
+    uint32_t tap[4];                   /* GLO TAP: the last taps (fm1_ms) */
+    uint8_t ntap, dt_l, dtap, rp_dirty;
+    uint8_t snd;                       /* GLO + PRESETS turned: the sound view in the map's place (Mono) */
+    uint32_t dt_ms;
+    struct { uint8_t home, page, act, seq, fam[FAM_COUNT]; } nv;
+} lys;
+
+static const uint32_t LY_DTAP_MS=300u;
+
+
+
+static int layer_allowed(void) { return !ui.menu && !ui.confirm && !ui.uboot && !name_on(); }
+/* MIXER (Tessera 2.1, Theo), PERF and LANDSCAPE (the GLO pages to play with, review 2026-11-13): the GLO layer
+ * without holding GLO. Their keys are the layer's (black keys mute, white keys solo while held, C4 unmutes all, E4
+ * FILL while held, F4 taps the tempo), their LEDs the layer's; their knobs stay the page's (MIXER: the four tracks'
+ * levels, OCT- held their pans, ui_input.c tracks_edit; PERF: the MACROs). A layer button armed (GLO, SCL held) wins */
+static int mixer_live(void)
+{
+    uint32_t g = cur_page()->graph;
+    return !ui.home && !ui.ly && layer_allowed() && (g == GR_TRK || g == GR_PERF || g == GR_LAND);
+}
+static uint32_t ly_bit(uint32_t l) { return 1u << panel.btn[LAYERS[l].btn]; }
+static uint32_t ly_down(uint32_t l) { return l && ((fm1_in.buttons & ly_bit(l)) != 0u || ui.lock == l); }
+static uint32_t layer_bits(void)
+{
+    uint32_t l, m = 0;
+    for (l = LAYER_GLO; l < LAYER_N; l++)
+        m |= ly_bit(l);
+    if (step_modifier_context())
+        m &= ~step_modifier_mask();                      /* synth STEP: SCL, EDIT edit notes */
+    return m;
+}
+static uint32_t layer_btn(void) { return LAYERS[ui.layer % LAYER_N].btn; }
+static const char *layer_head(void)
+{
+    static const char *const locked[LAYER_N] = {"", "", "[GLO] LOCK", "[SCL] LOCK"};
+    return ui.lock ? locked[ui.layer % LAYER_N] : LAYERS[ui.layer % LAYER_N].head;
+}
+static uint32_t layer_open(void) { return ui.ly && (ui.ly_t0 & LY_OPEN) && ly_down(ui.ly) && layer_allowed() ? ui.ly : 0u; }
+static int layer_set_open(void) { return layer_open() && LAYERS[layer_open()].kind==LK_SET; }
+static uint32_t layer_held(void) { return ui.ly && ly_down(ui.ly) && layer_allowed(); }
+
+/* each pass, before the keys: what the ISR (seq.c keyboard_block) gives to a layer. Armed: its button; none
+ * armed: any layer button not already down (one pressed meanwhile is armed below; one held over from before
+ * is ignored, its keys stay notes); armed but dead (pressed under a dialog, a menu or NAME that has closed
+ * since): nothing, its keys stay notes */
+static void layer_masks(void)
+{
+    uint32_t m = !layer_allowed() || (ui.ly && (ui.ly_t0 & LY_DEAD)) ? 0u
+               : ui.ly ? ly_bit(ui.ly) : layer_bits() & ~fm1_in.buttons;
+    kb_mask = m | (layer_allowed() && !ui.ly ? 1u << panel.btn[B_SEQ] : 0u);
+
+    kb_lock = (m && ui.lock) || mixer_live() ? 1u : 0u;  /* (MIXER, PERF, LANDSCAPE: their keys the GLO layer's) */
+
+}
+
+/* a layer button pressed (its edge) while none is armed: it is now, a dead one where no layer opens */
+static void layer_arm(uint32_t pressed, uint32_t now)
+{
+    uint32_t l;
+    if (ui.ly)
+        return;
+    for (l = LAYER_GLO; l < LAYER_N; l++)
+        if (pressed & ly_bit(l) & layer_bits()) {
+            lys.dtap=lys.dt_l==l && fm1_ms-lys.dt_ms<=LY_DTAP_MS;
+            lys.dt_l=0;
+            ui.ly = (uint8_t)l;
+            ui.ly_t0 = (now & ~15u) | 1u | (layer_allowed() ? 0u : LY_DEAD);
+            return;
+        }
+}
+
+/* the layer opened: once seen, no more hint; SET: what OCT- will put back */
+static void layer_opened(uint32_t l)
+{
+    uint32_t k;
+    if (!((layer_seen >> l) & 1u)) {
+        layer_seen |= (uint8_t)(1u << l);
+        settings_save();                                /* (deferred while playing) */
+    }
+    lys.l = (uint8_t)l;
+    lys.trk = song.sel;
+    for (k = 0; k < 4u; k++)
+        if (l == LAYER_GLO) {
+            lys.v[k] = trk[k].p[P_MUTE];
+            lys.v[4u + k] = trk[k].p[P_LEVEL];
+        } else {
+            lys.v[k] = TSEL->p[P_ROOT + k];
+            lys.v[4u + k] = k < 2u ? TSEL->p[P_CHRD + k] : 0;
+        }
+    lys.v[8] = song.g[G_BPM];
+}
+
+
+static void layer_let_go(uint32_t quiet)
+{
+    (void)quiet;
+
+    if (lys.rp_dirty) { lys.rp_dirty=0; settings_save(); }
+    ui.ly_t0=0; ui.ly=0; ui.lock=0; kb_lock=0; lys.snd=0;
+}
+static void layer_lock_input(uint32_t pressed)
+{
+    uint32_t keep = 1u << panel.btn[B_PLAY] | 1u << panel.btn[B_REC] | 1u << panel.btn[B_OCTDN] | 1u << panel.btn[B_OCTUP];
+    if (lys.dt_l && (pressed & ~ly_bit(lys.dt_l)))
+        lys.dt_l = 0;
+    if (!ui.lock)
+        return;
+    if (pressed & ly_bit(ui.lock))
+        ui.lock = 0;
+    else if (pressed & ~keep)
+        layer_let_go(1);
+}
+
+/* the armed button: 0, or the layer whose button was tapped (let go) */
+static uint32_t layer_gesture(uint32_t now, uint32_t combo)
+{
+    uint32_t *t0 = &ui.ly_t0, l = ui.ly;
+    if (!l)
+        return 0;
+    if (!layer_allowed()) {
+        *t0 |= LY_DEAD;
+        ui.lock = 0;                                    /* (the menu, a dialog, NAME: the lock closes) */
+    }
+    if (ly_down(l)) {
+        if (!(*t0 & (LY_OPEN | LY_DEAD)) &&
+            (combo || now - (*t0 & ~15u) >= (uint32_t)HOLD_MS[settings_hold % 4u] * 1000u * FM1_TICKS_PER_US)) {
+            *t0 |= LY_OPEN | (combo ? LY_COMBO : 0u);
+            layer_opened(l);
+        }
+        return 0;
+    }
+    l = *t0 & (LY_OPEN | LY_DEAD) || combo ? 0u : l;   /* (a knob turned as it was let go: a combo, no tap) */
+    if (l && lys.dtap) {                                /* #83: a double tap: locked open (no tap) */
+        lys.dtap = 0;
+        ui.home=lys.nv.home; ui.page=lys.nv.page; ui.act=lys.nv.act;
+        memcpy(ui.fam_last,lys.nv.fam,sizeof ui.fam_last); song.seq_mode=lys.nv.seq;
+        ui.entry_open=0; ui.msg_t=0; ui.lock=(uint8_t)l;
+        ui.ly_t0=(now&~15u)|1u|LY_OPEN; ui.force=1; layer_opened(l);
+        return 0;
+    }
+    layer_let_go(*t0 & LY_OPEN || combo);
+    return l;
+}
+
+/* the map shows while the button is held open, and after it while its keys are still held */
+static void layer_show(void)
+{
+    uint32_t show = layer_allowed() ? (layer_open() ? layer_open() : kb_layer ? ui.layer : 0u) : 0u;
+    if (show != ui.layer) {
+        ui.layer = (uint8_t)show;
+        ui.force = 1;
+    }
+}
+
+/* a tap: the button's page; the hint until its layer has been opened once (unless the tap said something, or
+ * opened NAME: EDIT on USER / PROJECT renames; never over a dialog or the menu, nor on MIXER, PERF or LANDSCAPE,
+ * whose keys are the layer's already) */
+static void layer_tap(uint32_t l)
+{
+    lys.dt_l=(uint8_t)l; lys.dt_ms=fm1_ms;
+    lys.nv.home=ui.home; lys.nv.page=ui.page; lys.nv.act=ui.act; lys.nv.seq=song.seq_mode;
+    memcpy(lys.nv.fam,ui.fam_last,sizeof ui.fam_last);
+    uint8_t m = ui.msg_t;
+    page_tap(LAYERS[l].btn);
+    if (!((layer_seen >> l) & 1u) && ui.msg_t == m && !name_on() && !ui.confirm && !ui.menu && !mixer_live()) {
+        char hq[24] = "HOLD [";                         /* (whole, so the screen reader hears the end too) */
+        str_cpy(hq + 6, KC[LY_KC[l]].label, sizeof hq - 6u);
+        str_cpy(hq + str_len(hq), "] SET", sizeof hq - str_len(hq));
+        ui_message(hq);
+        ui.msg_t = 90;                                  /* ~1.5 s */
+    }
+}
+
+/* GLO TAP: from the third tap the tempo of the taps (the last 4); 2 s without one starts over. INT clock only */
+static void glo_tap(void)
+{
+    uint32_t n = lys.ntap, i;
+    if (song.g[G_CLOCK]) {
+        ui_message("TAP: CLK IS EXT");
+        return;
+    }
+    if (n && fm1_ms - lys.tap[n - 1u] > 2000u)
+        n = 0;
+    if (n == 4u) {
+        for (i = 0; i < 3u; i++)
+            lys.tap[i] = lys.tap[i + 1u];
+        n = 3;
+    }
+    lys.tap[n++] = fm1_ms;
+    lys.ntap = (uint8_t)n;
+    if (n >= 3u && lys.tap[n - 1u] != lys.tap[0]) {
+        song.g[G_BPM] = (int16_t)clamp((int32_t)(60000u * (n - 1u) / (lys.tap[n - 1u] - lys.tap[0])),
+                                       GP[G_BPM].min, GP[G_BPM].max);
+        ui.bpm_t = 40;
+    }
+}
+
+/* SELECT on HOME, or with GLO held: the tempo, as SEQ > TEMPO's BPM (INT clock only) */
+static void bpm_turn(int32_t s)
+{
+    if (song.g[G_CLOCK]) {
+        ui_message("CLOCK IS EXT");
+        return;
+    }
+    song.g[G_BPM] = (int16_t)clamp(song.g[G_BPM] + accel(EN_SELECT, s, GP[G_BPM].max - GP[G_BPM].min),
+                                   GP[G_BPM].min, GP[G_BPM].max);
+    ui.bpm_t = 40;
+}
+
+/* PRESETS with GLO held, on any page: the selected track's sounds, as PRESETS on HOME (the same list, loads and
+ * acceleration); the page's own PRESETS turn (FM6's operator, the NOTES zoom, ..) needs GLO let go. Mono: the sound
+ * view in the map's place (mo_glo_sound) until GLO is let go or the map's keys or knobs are used; the detailed look:
+ * the sound shown (the pending one while turning fast) in the message */
+static void glo_preset_turn(int32_t s)
+{
+    char tag[8], nm[24];
+    uint32_t k, src, total;
+    list_cur(&total);
+    browse_turn(EN_PRESET, s);
+    if (!total)                                          /* (browse_turn said why) */
+        return;
+    if (!lys.snd)
+        ui.force = 1;
+    lys.snd = 1;
+#if !MELODEE_LOOK
+    src = browse_shown(&k);
+    entry_label(src, k, tag, nm);
+    ui_message(nm);
+#else
+    (void)tag, (void)nm, (void)k, (void)src;
+#endif
+}
+static int glo_sound_on(void) { return ui.layer == LAYER_GLO && lys.snd; }   /* draw_layer: the sound view, not the map */
+static void glo_map_back(void)                           /* the map's keys or knobs used: the map again */
+{
+    if (lys.snd)
+        ui.force = 1;
+    lys.snd = 0;
+}
+
+/* a key pressed in layer l (k: 0 = F3 .. 26 = G5) */
+static void layer_key(uint32_t l, uint32_t k)
+{
+    uint32_t p = key_place(k);
+    glo_map_back();
+
+    if (l == LAYER_GLO) {
+        if (key_black(k)) {
+            if (p < NTRK) mute_press(p, 0);              /* (MENU MUTES: now, or on the next bar / phrase) */
+        } else if (p < NTRK) {
+            lys.solo |= 1u << k;                        /* (layer_masks: track_solo while held) */
+        } else if (p == 4u) {
+            mute_press(0, 1);
+        } else if (p == 6u) {
+            lys.fill |= 1u << k;                        /* (layer_keys: FILL while held) */
+        } else if (p == 7u) {
+            glo_tap();
+        }
+    } else if (l == LAYER_SCL) {
+        TSEL->p[P_ROOT] = (int16_t)((k + 5u) % 12u);    /* the key's note name (F3 = F) */
+        if (tessera.key_link) scale_share(TSEL);       /* (KEY LINK: every melodic track's) */
+    }
+}
+/* each pass: the keys the layer got now; then GLO's solo: the tracks of its keys still held (perform.c); FILL while E4 is */
+static void layer_keys(uint32_t keys)
+{
+    uint32_t k, l = layer_open() ? layer_open() : ui.layer ? ui.layer : mixer_live() ? (uint32_t)LAYER_GLO : 0u, s = 0;
+    for (k = 0; keys && k < 27u; k++)
+        if ((keys >> k) & 1u)
+            layer_key(l, k);
+    lys.solo &= kb_layer;
+    lys.fill &= kb_layer;
+    seq_fill = lys.fill != 0u;
+    for (k = 0; k < 27u; k++)
+        if ((lys.solo >> k) & 1u)
+            s |= 1u << key_place(k);
+    track_solo = (uint8_t)s;
+}
+
+/* KNOB 1..4 in the open layer: its own (GLO levels), else the four of its page */
+static void layer_knob(uint32_t k, int32_t s)
+{
+    uint32_t l = layer_open();
+    glo_map_back();
+    if (l == LAYER_GLO) {                        /* T1..T4 LEVEL, recorded as on MIXER */
+        int16_t *vp = &trk[k].p[P_LEVEL];
+        *vp = (int16_t)clamp(*vp + accel(EN_K1 + k, s, TP[P_LEVEL].max - TP[P_LEVEL].min), TP[P_LEVEL].min, TP[P_LEVEL].max);
+        motion_capture(&trk[k], P_LEVEL, *vp);
+    } else if (l) {                                     /* the page's knobs, wherever the page is */
+        uint8_t h = ui.home, pg = ui.page;
+        ui.home = 0;
+        ui.page = (uint8_t)page_first(LAYERS[l].fam);
+        page_over = l == LAYER_SCL ? &LY_SCL : 0;
+        edit_param(k, s);
+        page_over = 0;
+        ui.home = h;
+        ui.page = pg;
+    }
+}
+
+/* PLAY with GLO held open: RESTART (from the top, playing on); stopped: PLAY. 1 = done here */
+static int layer_play(void)
+{
+    if (layer_open() != LAYER_GLO || chain_busy())
+        return 0;
+    if (song.g[G_CLOCK] && song.playing) {
+        ui_message("CLOCK IS EXT");
+        return 1;
+    }
+    transport_req = song.playing ? 3u : 1u;
+    return 1;
+}
+
+/* OCT- / OCT+ in a SET layer: no octave; OCT- let go puts back what the layer changed. Returns the taps left */
+static uint32_t layer_oct(uint32_t pressed, uint32_t oct)
+{
+    uint32_t dn = panel.btn[B_OCTDN], up = panel.btn[B_OCTUP], k, mine;
+    if (layer_set_open())
+        lys.oct |= (uint8_t)(((pressed >> dn) & 1u) | ((pressed >> up) & 1u) << 1);
+    mine = oct & lys.oct;
+    if (mine & 1u) {                                    /* OCT-: back to when it opened */
+        if (lys.l == LAYER_GLO) {
+            for (k = 0; k < NTRK; k++) {
+                trk[k].p[P_MUTE] = lys.v[k];
+                trk[k].p[P_LEVEL] = lys.v[4u + k];
+            }
+            song.g[G_BPM] = lys.v[8];
+            ui_message("MIX PUT BACK");
+        } else {
+            for (k = 0; k < 4u; k++)
+                trk[lys.trk % NTRK].p[P_ROOT + k] = lys.v[k];
+            trk[lys.trk % NTRK].p[P_CHRD] = lys.v[4];
+            trk[lys.trk % NTRK].p[P_VOIC] = lys.v[5];
+            scale_share(&trk[lys.trk % NTRK]);
+            ui_message("SCALE PUT BACK");
+        }
+    }
+    lys.oct &= (uint8_t)(((fm1_in.buttons >> dn) & 1u) | ((fm1_in.buttons >> up) & 1u) << 1);
+    return oct & ~mine;
+}
+
+static const char W_NOTE[16];
+/* --------------------------------------------------------- the LEDs --- */
+/* lit = in effect now (held, the value, a track sounding), slow blink = can be pressed, dark = nothing there */
+static int glo_sounding(uint32_t t)
+{
+    uint32_t warn = 0, out = tessera_entries_get(&warn, 0);
+    if (((warn | mute_waiting()) >> t) & 1u) return (fm1_ms / 125u) & 1u;   /* (Entries or a waiting mute key changes it
+                                                                            * on the next line: a quick blink) */
+    return !trk[t].p[P_MUTE] && !((out >> t) & 1u && !((track_solo >> t) & 1u)) && (!track_solo || ((track_solo >> t) & 1u));
+}
+static uint32_t layer_leds(void)
+{
+    uint32_t k, m = 0, blink = ((fm1_ms / 250u) & 1u) == 0u, l = ui.layer ? ui.layer : mixer_live() ? (uint32_t)LAYER_GLO : 0u;
+    uint32_t mask = scale_mask(TSEL), root = (uint32_t)TSEL->p[P_ROOT] % 12u;
+    for (k = 0; k < 27u; k++) {
+        uint32_t p = key_place(k), b = (uint32_t)key_black(k), on = 0, e;
+        if (l == LAYER_GLO) {
+            on = b ? p < NTRK && glo_sounding(p) :
+                 p < NTRK ? ((lys.solo >> k) & 1u) | blink : p == 4u ? blink : p == 6u ? ((lys.fill >> k) & 1u) | blink :
+                 p == 7u && !song.g[G_CLOCK] && blink;
+        } else if (l == LAYER_SCL) {                    /* the root lit, the scale's notes blink */
+            e = (k + 5u + 12u - root) % 12u;
+            on = e == 0u || (((mask >> e) & 1u) && blink);
+        }
+        m |= on << k;
+    }
+    return m;
+}
+
+/* ------------------------------------------------------ the overlay --- */
+/* One template: the header names the button and the kind ("[GLO] SET"); the cards are KNOB 1..4; the panel the
+ * map of the keys as cells (the key's note name, an icon, a name); the footer the keycaps. A cell: RAISE
+ * (can be pressed), the selection's fill (the value now, SET), the accent (held, HOLD), DIM (cannot now: pressing
+ * it says why), KEY (a muted track, as the MUTE badge); HOLD cells in a SET layer: a corner triangle */
+static const char W_NOTE[16] = {'F', 'G', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'A', 'B', 'C', 'D', 'E', 'F', 'G'};
+static const char B_NOTE[NTRK] = {'F', 'G', 'A', 'C'};  /* black keys 1..4: F# G# A# C# */
+#define LC_X(c) (6 + 58 * (int32_t)(c))                 /* cell column c: 54 px wide, 4 px apart */
+#define LC_W 54
+#define LC_H 42                                          /* the big cells: rows at y 4 and 50 */
+#define LM_Y 96                                          /* the black keys' row (22 px) */
+#define LM_H 22
+enum { LS_OFF, LS_SEL, LS_HELD, LS_WAIT, LS_DIM, LS_MUTE };
+
+static uint16_t lc_fill(uint32_t st, uint16_t *ink)
+{
+    *ink = st == LS_DIM ? T_DIM : T_THEME;
+    if (st == LS_MUTE) {
+        *ink = T_INK;
+        return T_KEY;
+    }
+    if (st == LS_HELD) {
+        *ink = T_BG;
+        return T_ACCENT;
+    }
+    if (st == LS_SEL || st == LS_WAIT) {
+        *ink = T_INK;
+        return T_THEME;
+    }
+    return T_RAISE;
+}
+/* a cell at x, y, h px high: big (h > 30) the icon over the name; a name: compact, the icon at the right (none: no
+ * icon); else a black key's: two icons at the right. tri: a HOLD cell in a SET layer */
+static void lcell(int32_t x, int32_t y, int32_t h, const char *note, uint32_t icon, uint32_t icon2, const char *name,
+                  uint32_t st, int tri)
+{
+    uint16_t ink, fill = lc_fill(st, &ink);
+    cv_rrect(x, y, LC_W, h, 4, fill, T_SURF);
+    if (note)
+        cv_text_on(x + 5, y + 3, &AF_S, note, fill == T_RAISE ? T_MID : ink, fill);
+    if (h > 30) {
+        cv_icon_on(x + (LC_W - 16) / 2, y + 4, 16, icon, ink, fill);
+        cv_text_c(x + LC_W / 2, y + 23, &AF_S, name, ink, fill);
+    } else if (name && h > 24) {
+        cv_icon_on(note ? x + LC_W - 17 : x + 5, y + 4, 12, icon, ink, fill);
+        cv_text_c(x + LC_W / 2, y + 15, &AF_S, name, ink, fill);
+    } else if (name) {
+        if (!note && icon < ICON_COUNT) {                  /* (the EDIT layer: the engine's icon instead of the key) */
+            cv_icon_on(x + 3, y + (h - 12) / 2, 12, icon, ink, fill);
+            cv_text_r(x + LC_W - 3, y + 5, &AF_S, name, ink, fill);
+        } else {
+            cv_text_r(x + LC_W - 5, y + 5, &AF_S, name, ink, fill);
+        }
+    } else {
+        cv_icon_on(x + LC_W - 31, y + 5, 12, icon, ink, fill);
+        cv_icon_on(x + LC_W - 17, y + 5, 12, icon2, ink, fill);
+    }
+    if (tri) {
+        int32_t j;
+        for (j = 0; j < 4; j++)
+            cv_rect(x + LC_W - 7 + j, y + 2 + j, 4 - j, 1, ink);
+    }
+}
+static void bnote(char *n, uint32_t t) { n[0] = B_NOTE[t]; n[1] = '#'; n[2] = 0; }
+
+
+static void layer_glo(void)
+{
+    uint32_t e;
+    char n[3] = {0, 0, 0};
+    for (e = 0; e < NTRK; e++) {                        /* F3 .. B3: SOLO while held */
+        n[0] = W_NOTE[e];
+        lcell(LC_X(e), 4, LC_H, n, trk_icon(e, 0), 0, "SOLO", (track_solo >> e) & 1u ? LS_HELD : LS_OFF, 1);
+    }
+    n[0] = 'C';
+    lcell(LC_X(0), 50, LC_H, n, ICON_MUTE, 0, "ALL", LS_OFF, 0);   /* (unmute all) */
+    n[0] = 'F';
+    lcell(LC_X(3), 50, LC_H, n, ICON_TEMPO, 0, "TAP", song.g[G_CLOCK] ? LS_DIM : LS_OFF, 0);
+    for (e = 0; e < NTRK; e++) {                        /* the black keys 1..4: MUTE, latched */
+        bnote(n, e);
+        lcell(LC_X(e), LM_Y, LM_H, n, ICON_MUTE, trk_icon(e, 0), 0, (mute_waiting() >> e) & 1u ? LS_WAIT : trk[e].p[P_MUTE] ? LS_MUTE : LS_OFF, 0);
+    }
+}
+static void layer_scl(void)                             /* KNOB 2's scales, 4 x 4, the one now selected */
+{
+    uint32_t i, sc = (uint32_t)TSEL->p[P_SCALE], base = sc / 16u * 16u;
+    for (i = 0; i < 16u && base + i <= (uint32_t)TP[P_SCALE].max; i++) {
+        int32_t x = LC_X(i % 4u), y = 4 + 29 * (int32_t)(i / 4u);
+        uint16_t ink, fill = lc_fill(base + i == sc ? LS_SEL : LS_OFF, &ink);
+        cv_rrect(x, y, LC_W, 25, 4, fill, T_SURF);
+        cv_text_c(x + LC_W / 2, y + 7, &AF_S, TP[P_SCALE].names[base + i], ink, fill);
+    }
+}
+/* GLO held (docs/design: mock/r6_pages GLO): the keys as a keyboard: the black keys MUTE 1..4 (muted: red), the white
+ * keys SOLO 1..4 (held: the track's colour), C unmutes all, E FILL (held: lit), the high F taps the tempo (an outside
+ * clock: dim) */
+static void layer_glo_keys(int32_t h)
+{
+    static const char *const WL[8][2] = {{"Solo", "1"}, {"Solo", "2"}, {"Solo", "3"}, {"Solo", "4"}, {"Mute", "all"},
+                                         {"", ""}, {"Fill", "held"}, {"Tap", "bpm"}};
+    static const uint8_t BX[NTRK] = {0, 1, 2, 4};       /* black key t: between white BX and BX + 1 (F# G# A# C#) */
+    const int32_t kw = 28, x0 = 1, wy = 68, by = 24, bh = 38;
+    uint32_t i;
+    cv_text_on(8, 6, &AF_X, "Keys", T_MID, T_PANEL);
+    for (i = 0; i < 8u; i++) {
+        int32_t x = x0 + (int32_t)i * (kw + 1);
+        int on = (i < NTRK && ((track_solo >> i) & 1u)) || (i == 6u && (seq_fill || seq_fill_mod)), none = !WL[i][0][0], dim = i == 7u && song.g[G_CLOCK];
+        uint16_t f = on ? (i < NTRK ? T_TRK(i) : T_THEME) : none ? ux_mix(T_PANEL, T_SURF, 50) : T_SURF, ink = on ? T_INK : dim ? T_DIM : T_TEXT;
+        cv_rrect(x, wy, kw, h - wy - 6, 4, f, T_PANEL);
+        if (!none) {
+            cv_text_c(x + kw / 2, h - 36, &AF_X, WL[i][0], ink, f);
+            cv_text_c(x + kw / 2, h - 23, &AF_X, WL[i][1], ink, f);
+        }
+    }
+    for (i = 0; i < NTRK; i++) {
+        int32_t x = x0 + (int32_t)(BX[i] + 1u) * (kw + 1) - 14;
+        int m = trk[i].p[P_MUTE] != 0;
+        uint16_t f = m ? T_REC : T_LIFT;
+        char n[2] = {(char)('1' + i), 0};
+        cv_rrect(x, by, 26, bh, 4, f, T_PANEL);
+        cv_text_c(x + 13, by + bh - 28, &AF_X, "Mute", m ? T_TEXT : T_SEC, f);
+        cv_text_c(x + 13, by + bh - 15, &AF_X, n, m ? T_TEXT : T_SEC, f);
+    }
+}
+
+static void layer_cards(uint32_t l)
+{
+    char val[12];
+    const char *unit;
+    uint32_t c;
+    if (l == LAYER_GLO) {                        /* T1..T4 LEVEL (the track's icon; muted: dim) */
+        for (c = 0; c < NTRK; c++) {
+            param_format(&TP[P_LEVEL], trk[c].p[P_LEVEL], val, &unit);
+            draw_column(c, "LEVEL", val, unit, glo_sounding(c) ? VAL(c) : T_DIM, RATIO(&TP[P_LEVEL], trk[c].p[P_LEVEL]),
+                        trk_icon(c, 1));
+        }
+    } else {                                            /* the page's four (SCL: LY_SCL) */
+        uint8_t h = ui.home, pg = ui.page;
+        ui.home = 0;
+        ui.page = (uint8_t)page_first(LAYERS[l].fam);
+        page_over = l == LAYER_SCL ? &LY_SCL : 0;
+        draw_columns();
+        page_over = 0;
+        ui.home = h;
+        ui.page = pg;
+    }
+}
+
+#if MELODEE_LOOK
+/* Mono: the knobs as the knob pages' dials; GLO's keys as three rows of cells (the black keys MUTE 1..4, filled while
+ * muted; the white keys SOLO 1..4, filled while held; C unmutes all, E FILL, F taps the tempo, dim with an outside
+ * clock), SCL KNOB 2's scales 4 x 4 (the one now selected inverted); under them what OCT- and the button do. Drawn
+ * whole under the header when anything on it changes */
+static void mo_lcell(int32_t c, int32_t y, const char *name, const char *sub, int on, int dim, int trk)
+{                                                       /* (trk: a track's cell, in its colour) */
+    int32_t cx = 15 + 30 * c;
+    uint16_t ink = trk ? MO_TRK(c) : MO_INK, dm = trk ? mo_tdim((uint32_t)c) : MO_DIM;
+    if (on) mo_fill(cx - 14, y, 28, 18, dim ? dm : ink);
+    else mo_box(cx - 14, y, 28, 18, dm);
+    mo_textc(name, cx, y + 2, on ? MO_BG : dim ? dm : ink);
+    mo_textc(sub, cx, y + 10, on ? MO_BG : dm);
+}
+static int32_t mo_lhint(int32_t x, const char *key, const char *word)
+{
+    mo_inv(key, x + 1, 112);
+    x += mo_tw(key) + 4;
+    mo_text(word, x, 112, MO_DIM);
+    return x + mo_tw(word) + 5;
+}
+static void mo_layer(uint32_t l)
+{
+    uint32_t sig = l * 7919u + ux.pal * 31u + song.sel * 13u, c, s, i;
+    const uint8_t *p = (const uint8_t *)mo_col;
+    memset(mo_col, 0, sizeof mo_col);
+    mo_on = 1;
+    layer_cards(l);
+    mo_on = 0;
+    for (i = 0; i < sizeof mo_col; i++)
+        sig = (sig ^ p[i]) * 16777619u;
+    if (l == LAYER_GLO)
+        sig += track_solo * 31u + (uint32_t)song.g[G_CLOCK] * 5u + (uint32_t)(seq_fill | seq_fill_mod) * 7u +
+               (uint32_t)(trk[0].p[P_MUTE] | trk[1].p[P_MUTE] << 1 | trk[2].p[P_MUTE] << 2 | trk[3].p[P_MUTE] << 3) * 131u +
+               (mute_waiting() ? 1u + ((fm1_ms / 250u) & 1u) : 0u) * 4099u;   /* (a waiting mute blinks) */
+    else
+        sig += (uint32_t)TSEL->p[P_SCALE] * 31u;
+    if (!ui.force && sig == ui.layer_sig)
+        return;
+    ui.layer_sig = sig;
+    for (s = 0; s < 2u; s++) {
+        int32_t x = 1;
+        cv_begin(240, s ? 120u : 102u, MO_BG);
+        cv_oy = s ? -120 : -18;
+        mo_cols_trk = l == LAYER_GLO;                   /* (GLO's knobs: the four levels) */
+        mo_cols();
+        mo_cols_trk = 0;
+        if (l == LAYER_GLO) {
+            char n[6];
+            for (c = 0; c < NTRK; c++) {                /* "MUTE" over "1 F#" */
+                n[0] = (char)('1' + c), n[1] = ' ';
+                bnote(n + 2, c);
+                mo_lcell((int32_t)c, 52, "MUTE", n, (trk[c].p[P_MUTE] != 0) ^ ((mute_waiting() >> c) & (fm1_ms / 250u) & 1u), 0, 1);
+                n[2] = W_NOTE[c], n[3] = 0;
+                mo_lcell((int32_t)c, 71, "SOLO", n, (track_solo >> c) & 1u, 0, 1);
+            }
+            mo_lcell(0, 90, "ALL", "C", 0, 0, 0);
+            mo_lcell(1, 90, "FILL", "E", (seq_fill || seq_fill_mod) != 0, 0, 0);
+            mo_lcell(2, 90, "TAP", "F", 0, song.g[G_CLOCK] != 0, 0);
+            x = mo_lhint(x, "OCT-", "UNDO");
+            mo_lhint(x, "GLO", "DONE");
+        } else {
+            uint32_t sc = (uint32_t)TSEL->p[P_SCALE], base = sc / 16u * 16u;
+            for (i = 0; i < 16u && base + i <= (uint32_t)TP[P_SCALE].max; i++) {
+                int32_t cx = 1 + 30 * (int32_t)(i % 4u), y = 53 + 14 * (int32_t)(i / 4u);
+                char a[8];
+                mo_abbr(a, TP[P_SCALE].names[base + i]);
+                if (base + i == sc) mo_fill(cx, y, 28, 12, MO_INK);
+                else mo_box(cx, y, 28, 12, MO_DIM);
+                mo_textc(a, cx + 14, y + 3, base + i == sc ? MO_BG : MO_INK);
+            }
+            x = mo_lhint(x, "KEYS", "ROOT");
+            mo_lhint(x, "OCT-", "UNDO");
+        }
+        mo_hl(0, 109, 120, MO_INK);
+        cv_oy = 0;
+        cv_blit(0, s ? 120u : 18u);
+    }
+}
+/* nm in up to two lines of ten large letters (twice the font), centred, broken between words: rows y, y + 16 (one
+ * line: y + 8) */
+static void mo_big_name(const char *nm, int32_t y, uint16_t c)
+{
+    char u[24], l[2][12];
+    uint32_t n, e = 0, i, k;
+    mo_ascii(u, nm, sizeof u);
+    n = str_len(u);
+    if (n > 10u) {
+        for (i = 1; i <= 10u; i++)
+            if (u[i] == ' ') e = i;
+        if (!e) e = 10u;
+    } else {
+        e = n;
+    }
+    mo_cut(l[0], u, e);
+    for (i = e; u[i] == ' '; i++) ;
+    mo_cut(l[1], u + i, 10);
+    for (k = 0; k < 2u; k++)
+        if (l[k][0])
+            mo_text_s(l[k], 60 - mo_tw(l[k]), y + (l[1][0] ? (int32_t)k * 16 : 8), 2, c);
+}
+/* GLO + PRESETS turned (lys.snd): the selected track's sound in the map's place. Its track and the list (LIST's
+ * name) above with its place in it; the sound before and after it dim; the sound large, HOT while a fast turn waits for
+ * the knob to rest (shown, not loaded yet; the turn's acceleration inverted, X4); its engine below; the foot: GLO DONE */
+static void mo_glo_sound(void)
+{
+    uint32_t total, at = preset_pos(&total), m = list_mode(), src, k, s, sig;
+    int pending = browse_pending();
+    char a[24], b[24], tag[8], nm[24];
+    sig = 0x534E44u + at * 7u + total * 131u + m * 1031u + (uint32_t)pending * 3u + song.sel * 11u + up_gen * 7919u +
+          ux.pal * 31u + (pending ? brw.x : 0u) * 40503u;
+    if (!ui.force && sig == ui.layer_sig)
+        return;
+    ui.layer_sig = sig;
+    for (s = 0; s < 2u; s++) {
+        int32_t r;
+        cv_begin(240, s ? 120u : 102u, MO_BG);
+        cv_oy = s ? -120 : -18;
+        b[0] = 'T', b[1] = (char)('1' + song.sel % NTRK), b[2] = 0;
+        mo_invc(b, 2, 13, MO_TRK(song.sel % NTRK));
+        mo_ascii(a, list_name(m), sizeof a);
+        mo_cut(b, a, 10);
+        mo_text(b, 18, 13, MO_DIM);
+        if (total && at < total) {
+            fmt_int(b, (int32_t)at + 1);
+            str_cpy(b + str_len(b), "/", 2);
+            fmt_int(b + str_len(b), (int32_t)total);
+            mo_textr(b, 118, 13, MO_DIM);
+        }
+        mo_hl(0, 22, 120, MO_DIM);
+        for (r = -1; r <= 1 && total; r += 2) {         /* the sounds before and after */
+            int32_t n = (int32_t)at + r;
+            if (n < 0 || n >= (int32_t)total)
+                continue;
+            src = preset_at((uint32_t)n, &k);
+            entry_label(src, k, tag, nm);
+            mo_ascii(a, nm[0] ? nm : tag, sizeof a);
+            mo_cut(b, a, 19);
+            mo_textc(b, 60, r < 0 ? 27 : 81, MO_DIM);
+        }
+        src = browse_shown(&k);                         /* the sound: the pending one while turning fast */
+        entry_label(src, k, tag, nm);
+        mo_big_name(nm[0] ? nm : tag, 40, pending ? MO_HOT : MO_INK);
+        mo_hl(0, 91, 120, MO_DIM);
+        mo_ascii(a, ENGINES[eng_idx(src_engine(src, k))]->name, sizeof a);
+        mo_cut(b, a, 19);
+        mo_textc(b, 60, 96, MO_DIM);
+        if (pending && brw.x > 1u) {                    /* a fast turn: its acceleration (as the browser) */
+            b[0] = 'X';
+            fmt_int(b + 1, brw.x);
+            mo_inv(b, 118 - mo_tw(b), 96);
+        }
+        mo_hl(0, 109, 120, MO_INK);
+        mo_lhint(1, "GLO", "DONE");
+        cv_oy = 0;
+        cv_blit(0, s ? 120u : 18u);
+    }
+}
+#endif
+static void draw_layer(void)
+{
+    uint32_t l = ui.layer % LAYER_N, sig = l * 7919u + ux.gen * 977u, c;
+#if MELODEE_LOOK
+    if (glo_sound_on())
+        mo_glo_sound();
+    else
+        mo_layer(l);
+    return;
+#endif
+    if (l == LAYER_GLO) {                               /* the four levels as strips at the top, each track's colour */
+        uint8_t cs = col_style;
+        if (ui.force)
+            lcd_fill(0, H_HEAD, 240, 240 - H_HEAD, T_BG);
+        col_style = CS_STRIP;
+        pv_strip_y = 24;
+        for (c = 0; c < NTRK; c++)
+            pv_strip_tc[c] = T_TRK(c);
+        layer_cards(l);
+        memset(pv_strip_tc, 0, sizeof pv_strip_tc);
+        pv_strip_y = PV_STRIP_Y;
+        col_style = cs;
+    } else {
+        layer_cards(l);
+    }
+    if (l == LAYER_GLO)
+        sig += track_solo * 31u + (uint32_t)song.g[G_CLOCK] * 5u + (uint32_t)(seq_fill | seq_fill_mod) * 7u +
+               (uint32_t)(trk[0].p[P_MUTE] | trk[1].p[P_MUTE] << 1 | trk[2].p[P_MUTE] << 2 | trk[3].p[P_MUTE] << 3) * 131u +
+               (mute_waiting() ? 1u + ((fm1_ms / 250u) & 1u) : 0u) * 4099u;   /* (a waiting mute blinks) */
+    else if (l == LAYER_SCL)
+        sig += (uint32_t)TSEL->p[P_SCALE] * 31u;
+
+    if (l == LAYER_GLO) {                               /* (R6: levels at the top, the keys as a keyboard under them) */
+        if (ui.force || sig != ui.layer_sig) {
+            ui.layer_sig = sig;
+            pv_panel(62, 174, layer_glo_keys);
+        }
+        return;
+    }
+    if (ui.force || sig != ui.layer_sig) {
+        ui.layer_sig = sig;
+        cv_begin(240, H_GRAPH, T_BG);
+        cv_rrect(3, 0, 234, H_GRAPH, 5, T_SURF, T_BG);
+        cv_bg = T_SURF;
+        layer_scl();
+        cv_blit(0, Y_GRAPH);
+    }
+    if (ui.force) {                                     /* the footer: what the keys, knobs and buttons do */
+        cv_begin(240, H_FOOT, T_BG);
+        cv_key_row(8, 232, 9, LAYERS[l].foot, LAYERS[l].foot[2].act ? 3u : 2u, 7u, T_BG);
+        cv_blit(0, Y_FOOT);
+        ui.foot_sig = 0;
+    }
+}

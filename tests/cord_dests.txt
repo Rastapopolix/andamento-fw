@@ -1,0 +1,134 @@
+# Cord destinations (firmware/src/cord.c): code, name, kind, parameter. FROZEN: saved cords keep the
+# codes. Rewrite (CORD_UPDATE=1) only to append.
+ 0 --       voice -
+ 1 PITCH    voice -
+ 2 CUTOFF   voice -
+ 3 SHAPE    voice -
+ 4 GAIN     voice -
+ 5 LEVEL    block LEVEL
+ 6 PAN      block PAN
+ 7 SPREAD   block STEREO SPREAD
+ 8 ATTACK   block ENV ATTACK
+ 9 DECAY    block ENV DECAY
+10 SUSTAIN  block ENV SUSTAIN
+11 RELEASE  block ENV RELEASE
+12 ENV FLT  block ENV TO FILTER
+13 ENV PIT  block ENV TO PITCH
+14 ENV SHP  block ENV TO SHAPE
+15 LFO RTE  block LFO RATE
+16 LFO DEP  depth -
+17 LFO PIT  block LFO TO PITCH
+18 LFO FLT  block LFO TO FILTER
+19 LFO SHP  block LFO TO SHAPE
+20 LFO AMP  block LFO TO LEVEL
+21 FX SEND  block FX SEND
+22 E1       block ENGINE 1
+23 E2       block ENGINE 2
+24 E3       block ENGINE 3
+25 E4       block ENGINE 4
+26 E5       block ENGINE 5
+27 E6       block ENGINE 6
+28 E7       block ENGINE 7
+29 E8       block ENGINE 8
+30 T PROB   step  TURING PROB
+31 T LEN    step  TURING LENGTH
+32 E PULSE  step  EUCLID PULSES
+33 E ROT    step  EUCLID ROTATION
+34 M LEAP   step  MARKOV LEAP
+35 M DENS   step  MARKOV DENSITY
+36 MP POS   step  MORPH POSITION
+37 SHIFT    step  TWEAK SHIFT
+38 DROP     step  TWEAK DROP
+39 HUMAN    step  TWEAK HUMAN
+40 EV AMT   step  EVOLVE AMOUNT
+41 CONTR    step  FORM CONTRAST
+42 AT X     step  ATLAS X
+43 AT Y     step  ATLAS Y
+44 AT DENS  step  ATLAS DENSITY
+45 B SPEED  step  BOUNCE SPEED
+46 B ANGLE  step  BOUNCE ANGLE
+47 A PROB   step  AWAKE PROB
+48 BRANCH   step  TWEAK BRANCH
+49 Q PROB   step  QUAD PROB
+50 C Y      step  CONSTELLATION Y
+51 C SIZE   step  CONSTELLATION SIZE
+52 C DENS   step  CONSTELLATION DENS
+53 S START  step  SERIES START
+54 ?        ?     -
+55 C AUTO   step  CONSTELLATION AUTO
+56 CH PROG  step  CHORD PROG
+57 AT KICK  step  ATLAS KICK
+58 AT SNR   step  ATLAS SNARE
+59 AT HAT   step  ATLAS HAT
+60 AT TOMS  step  ATLAS TOMS
+61 AN VARY  step  ANSWER VARY
+62 H TIME   step  TIMING HUMAN
+63 FX1 MIX  block FX 1 MIX
+64 FX1 RTE  block FX 1 RATE
+65 FX1 CHR  block FX 1 CHARACTER
+66 FX2 MIX  block FX 2 MIX
+67 FX2 RTE  block FX 2 RATE
+68 FX2 CHR  block FX 2 CHARACTER
+69 FX3 MIX  block FX 3 MIX
+70 FX3 RTE  block FX 3 RATE
+71 FX3 CHR  block FX 3 CHARACTER
+72 SEND 2   block FX SEND 2
+73 SEND 3   block FX SEND 3
+74 SF1 MIX  send  SEND FX 1 MIX
+75 SF1 RTE  send  SEND FX 1 RATE
+76 SF1 CHR  send  SEND FX 1 CHARACTER
+77 SF2 MIX  send  SEND FX 2 MIX
+78 SF2 RTE  send  SEND FX 2 RATE
+79 SF2 CHR  send  SEND FX 2 CHARACTER
+80 SF3 MIX  send  SEND FX 3 MIX
+81 SF3 RTE  send  SEND FX 3 RATE
+82 SF3 CHR  send  SEND FX 3 CHARACTER
+83 RETURN   send  FX RETURN
+84 M1 AMT   cord  -
+85 M2 AMT   cord  -
+86 M3 AMT   cord  -
+87 M4 AMT   cord  -
+88 M5 AMT   cord  -
+89 M6 AMT   cord  -
+90 M7 AMT   cord  -
+91 M8 AMT   cord  -
+92 M9 AMT   cord  -
+93 M10 AMT  cord  -
+94 M11 AMT  cord  -
+95 M12 AMT  cord  -
+96 M13 AMT  cord  -
+97 M14 AMT  cord  -
+98 M15 AMT  cord  -
+99 M16 AMT  cord  -
+100 FILL     fill  -
+101 TEMPO    tempo -
+102 CC       cc    -
+103 SPLIT    step  TIMING SPLIT
+104 DIR      step  PATTERN DIR
+105 BUS A    bus   -
+106 BUS B    bus   -
+107 MOD DEP  mdepth -
+108 PLAY     play  -
+109 CLOCK    clock -
+110 STRUM    step  CHORD STRUM
+111 STR DIR  step  CHORD DIR
+112 RATCH    step  TIMING RATCH
+113 R CHANC  step  TIMING CHANCE
+114 GATE     seq   PATTERN GATE
+115 N LEN    step  NOTE LENGTH LEN
+116 LOCK     step  EVOLVE LOCK
+117 VELO     vel   -
+118 SWING    seq   PATTERN SWING
+119 GLIDE    seq   GLIDE
+120 GRAVITY  step  GRAVITY
+121 DEVELOP  step  FORM DEVELOP
+122 AN ECHO  step  ANSWER ECHO
+123 AN SHFT  step  ANSWER SHIFT
+124 AN SPCE  step  ANSWER SPACE
+125 BREATH   step  CHORD BREATH
+126 ACC LIM  step  ACCUM LIMIT
+127 TIDE SP  step  TIDE SPEED
+128 SWRM RT  step  SWARM RATE
+129 ARP RTE  seq   ARP RATE
+130 ARP GTE  seq   ARP GATE
+131 ARP OCT  seq   ARP OCTAVES
