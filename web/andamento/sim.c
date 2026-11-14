@@ -88,9 +88,12 @@ EXPORT void web_render(uint32_t n)
     }
 }
 
-/* the panel: encoders 0..7 the grid, 8 ENERGY; buttons AB_*; keys 0..15 (bottom row 0..7); VOL 0..1023 */
+/* the panel: encoders 0..7 the grid, 8 ENERGY (DATA: web_data); buttons AB_*; keys 0..15 (bottom row 0..7); VOL 0..1023 */
 EXPORT void web_enc(uint32_t i, int32_t n) { and_enc(i, n); }
 EXPORT void web_push(uint32_t i) { and_enc_push(i); }
+/* DATA, beside the page screen: turned n detents; pushed (down 1) and let go (0) */
+EXPORT void web_data(int32_t n) { and_data(n); }
+EXPORT void web_data_push(uint32_t down) { and_data_push(down); }
 EXPORT void web_button(uint32_t b, uint32_t down) { and_button(b, down); }
 EXPORT void web_key(uint32_t k, uint32_t down) { and_key(k, down); }
 EXPORT void web_volume(uint32_t v)
