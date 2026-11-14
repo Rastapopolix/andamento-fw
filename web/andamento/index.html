@@ -111,6 +111,7 @@ kbd { font: 12px ui-monospace, Menlo, monospace; border: 1px solid var(--line); 
       <h2>Encoders</h2>
       <p>Drag up or down, or use the mouse wheel. A click (without dragging) pushes it: the setting goes back to its default.</p>
       <p>Encoders A to H sit under the dial screen, each under its own dial; on HOME they are tracks 1 to 8's ENERGY DEPTH. ENERGY works on every page; VOL is the main level.</p>
+      <p><b>DATA</b>, beside the arrows, is the selected track's LEVEL (tracks 5 to 8: their MIDI velocity). Hold it down and use the mouse wheel to step through the page's tabs.</p>
       <p><b>Left-handed</b> swaps the encoders with the buttons, and the two screens' pictures, so the dials stay over the encoders; the choice is kept in this browser.</p>
     </div>
     <div>
@@ -173,19 +174,28 @@ function encoder(i, x, y, size, name, ly) {
     d.dataset.angle = +d.dataset.angle + n * 15;
     d.style.setProperty("--a", d.dataset.angle + "deg");
     if (i === 9) { volume = Math.max(0, Math.min(1023, volume + n * 24)); send({ type: "volume", value: volume }); }
+    else if (i === 10) send({ type: "data", n });
     else send({ type: "enc", i, n });
   };
-  d.addEventListener("pointerdown", (e) => { d.setPointerCapture(e.pointerId); drag = { y: e.clientY, acc: 0, moved: false }; e.preventDefault(); });
+  // DATA (10) is pushed while the button is down: the wheel then turns it pushed (the page's tabs); a drag lets
+  // go of the push first, so dragging turns it plainly (the track's level)
+  const dataUp = () => { if (d.classList.contains("pushed")) { d.classList.remove("pushed"); send({ type: "dataPush", down: 0 }); } };
+  d.addEventListener("pointerdown", (e) => {
+    d.setPointerCapture(e.pointerId); drag = { y: e.clientY, acc: 0, moved: false }; e.preventDefault();
+    if (i === 10) { d.classList.add("pushed"); send({ type: "dataPush", down: 1 }); }
+  });
   d.addEventListener("pointermove", (e) => {
     if (!drag) return;
     const dy = drag.y - e.clientY; drag.y = e.clientY; drag.acc += dy;
     const n = Math.trunc(drag.acc / 6);
-    if (n) { drag.acc -= n * 6; drag.moved = true; turn(n); }
+    if (n) { drag.acc -= n * 6; drag.moved = true; if (i === 10) dataUp(); turn(n); }
   });
   d.addEventListener("pointerup", () => {
-    if (drag && !drag.moved && i !== 9) { send({ type: "push", i }); d.classList.add("pushed"); setTimeout(() => d.classList.remove("pushed"), 150); }
+    if (i === 10) dataUp();
+    else if (drag && !drag.moved && i !== 9) { send({ type: "push", i }); d.classList.add("pushed"); setTimeout(() => d.classList.remove("pushed"), 150); }
     drag = null;
   });
+  d.addEventListener("pointercancel", () => { if (i === 10) dataUp(); drag = null; });
   d.addEventListener("wheel", (e) => { e.preventDefault(); turn(e.deltaY < 0 ? 1 : -1); }, { passive: false });
   encs[i] = d;
 }
@@ -193,8 +203,11 @@ let volume = 700, lastFrame = null;
 // from the two-screen mockup (840 x 540 px = 210 x 135 mm, 4 px a mm): x for the right hand, then for the left. The
 // encoder block and the button block swap sides; the screens stay, and swap pictures (onFrame)
 const placed = [];                               // [element, x right-handed %, x left-handed %]
-function both(d, xr, xl) { placed.push([d, xr, xl]); return d; }
+function both(d, xr, xl, yr, yl) { placed.push([d, xr, xl, yr, yl]); return d; }
 const ENC_XR = [51.79, 59.40, 67.02, 74.64], ENC_XL = [12.74, 20.36, 27.98, 35.60];
+// DATA beside the arrows, on the button block's side: right-handed between MIX and encoder E (the arrows leave no
+// room beside them there), left-handed past the right arrow
+const DATA_R = [45.0, 51.3, 56.6], DATA_L = [84.95, 58.33, 63.6];   // x, y, the label's y
 for (let i = 0; i < 8; i++) {
   const r = i < 4 ? 0 : 1;
   encoder(i, ENC_XR[i % 4], [44.26, 58.33][r], "", "ABCDEFGH"[i], [50.93, 65.0][r]);
@@ -203,6 +216,9 @@ for (let i = 0; i < 8; i++) {
 }
 encoder(8, 89.52, 13.70, "big", "ENERGY", 21.1);
 encoder(9, 89.52, 30.74, "small", "VOL", 35.93);
+encoder(10, DATA_R[0], DATA_R[1], "small", "DATA", DATA_R[2]);
+both(encs[10], DATA_R[0], DATA_L[0], DATA_R[1], DATA_L[1]);
+both(panel.lastElementChild, DATA_R[0], DATA_L[0], DATA_R[2], DATA_L[2]);
 
 const btns = [];
 function button(id, name, x, y, kind, ly, led) {
@@ -238,7 +254,10 @@ function store0(k) { try { return localStorage.getItem(k); } catch (e) { return 
 const handBtn = document.getElementById("handBtn");
 function hand(l) {
   left = l;
-  for (const [d, xr, xl] of placed) d.style.left = (left ? xl : xr) + "%";
+  for (const [d, xr, xl, yr, yl] of placed) {
+    d.style.left = (left ? xl : xr) + "%";
+    if (yr !== undefined) d.style.top = (left ? yl : yr) + "%";
+  }
   document.getElementById("nameL").textContent = left ? "DIALS" : "PAGE";
   document.getElementById("nameR").textContent = left ? "PAGE" : "DIALS";
   handBtn.textContent = left ? "Right-handed" : "Left-handed";
@@ -414,6 +433,8 @@ async function startMainThread(ac) {         // fallback: a ScriptProcessorNode 
     if (m.type === "key") queue.push({ k: m.k, down: m.down ? 1 : 0 });
     else if (m.type === "enc") ex.web_enc(m.i, m.n | 0);
     else if (m.type === "push") ex.web_push(m.i);
+    else if (m.type === "data") ex.web_data(m.n | 0);
+    else if (m.type === "dataPush") ex.web_data_push(m.down ? 1 : 0);
     else if (m.type === "button") ex.web_button(m.b, m.down ? 1 : 0);
     else if (m.type === "volume") ex.web_volume(m.value | 0);
     else if (m.type === "demo") ex.web_demo(m.slot | 0);

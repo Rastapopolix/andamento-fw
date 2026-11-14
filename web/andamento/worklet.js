@@ -33,6 +33,8 @@ class Andamento extends AudioWorkletProcessor {
     if (m.type === "key") this.keys.push(m);
     else if (m.type === "enc") ex.web_enc(m.i, m.n | 0);
     else if (m.type === "push") ex.web_push(m.i);
+    else if (m.type === "data") ex.web_data(m.n | 0);
+    else if (m.type === "dataPush") ex.web_data_push(m.down ? 1 : 0);
     else if (m.type === "button") ex.web_button(m.b, m.down ? 1 : 0);
     else if (m.type === "volume") ex.web_volume(m.value | 0);
     else if (m.type === "demo") ex.web_demo(m.slot | 0);
