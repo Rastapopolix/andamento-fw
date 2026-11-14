@@ -1,4 +1,12 @@
-# Melodee licensing
+# Licensing
+
+Andamento's firmware is a fork of Tessera (github.com/Rastapopolix/tessera, `develop` 81aa730f, 2026-11-14) and keeps
+its licensing: GPL-3.0-only, with every port and retained part listed below.
+Andamento code and modifications: Copyright (C) 2026 Theo Dainis.
+
+The rest of this page is Tessera's, as inherited ("Melodee" below covers Tessera and now Andamento too).
+
+## Melodee licensing
 
 Melodee is a modified version of Felucca by Leo Kuroshita (@kurogedelic), Hügelton Instruments
 (<https://github.com/hugelton/Felucca>), and keeps Felucca's licensing.

@@ -5,8 +5,9 @@ name: Daisy build (Andamento)
 # published. The memory report goes to the run summary.
 on:
   pull_request:
-    branches: [develop]
-    paths: ['firmware/src/**', 'tools/gen_*.py', 'platform/daisy/**', 'platform/andamento/**', '.github/workflows/daisy-build.yml']
+    branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
