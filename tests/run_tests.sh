@@ -222,14 +222,15 @@ qmap() {
         tests/target_budget.txt) QSEL="$QSEL target_budget" ;;
         tests/ui_render.*) QSEL="$QSEL ui_renders" ;;
         tests/oled_render.*) QSEL="$QSEL oled_render" ;;
-        platform/andamento/*) QSEL="$QSEL oled_render and_keys and_home and_ext and_ui and_master and_texture" ;;
+        platform/andamento/*) QSEL="$QSEL oled_render and_keys and_home and_ext and_ui and_pics and_master and_texture" ;;
         tests/and_keys_test.c) QSEL="$QSEL and_keys" ;;
         tests/and_home_test.c) QSEL="$QSEL and_home" ;;
         tests/and_ext_test.c) QSEL="$QSEL and_ext" ;;
         tests/and_ui_test.c) QSEL="$QSEL and_ui" ;;
+        tests/and_pics_test.c) QSEL="$QSEL and_pics" ;;
         tests/and_master_test.c) QSEL="$QSEL and_master" ;;
         tests/and_texture_test.c) QSEL="$QSEL and_texture" ;;
-        web/andamento/*) QSEL="$QSEL and_keys and_home and_ext and_ui and_master and_texture" ;;
+        web/andamento/*) QSEL="$QSEL and_keys and_home and_ext and_ui and_pics and_master and_texture" ;;
         firmware/src/mo_font.h) QSEL="$QSEL $G_UI oled_render" ;;
         tests/demo_steps.h | tests/demo_projects.c) QSEL="$QSEL demo_projects" ;;
         tests/phys_ref.cpp | tests/phys_fixed.c) QSEL="$QSEL phys_ref" ;;
@@ -469,6 +470,15 @@ and_ui() {                                        # (the headers as and_keys: we
         "$OUT/and_ui" build/oled
     [ $PIL = 1 ] && { python3 tests/oled_render.py build/oled || fail "tests/oled_render.py"; }
 }
+and_pics() {                                      # (the headers as and_keys: web/andamento/build.sh --headers)
+    sh web/andamento/build.sh --headers > /dev/null || { fail "web/andamento/build.sh --headers"; return; }
+    build and_pics and_pics_test -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 \
+        -DMELODEE_PHYS=1 -Ibuild/andamento/gen -Ifirmware/src -Itests || return
+    mkdir -p build/oled/ppm
+    step "Andamento pictures (platform/andamento/and_pics.c): every generator's on GEN, drawn and inside its rows" \
+        "$OUT/and_pics" build/oled
+    [ $PIL = 1 ] && { python3 tests/oled_render.py build/oled || fail "tests/oled_render.py"; }
+}
 and_master() {                                    # (the headers as and_keys: web/andamento/build.sh --headers)
     sh web/andamento/build.sh --headers > /dev/null || { fail "web/andamento/build.sh --headers"; return; }
     build and_master and_master_test -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 \
@@ -614,6 +624,7 @@ if core && [ $TABLES = 1 ]; then
     job and_home
     job and_ext
     job and_ui
+    job and_pics
     job and_master
     job and_texture
     t "boot audio: codec waits for settled silent DMA and shuts down before I2S" audio_boot_test -w
