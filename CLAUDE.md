@@ -53,7 +53,7 @@ touch build/tessera.fwsc
 QUICK_BASE=<base commit> sh tests/run_tests.sh --quick   # picks the jobs for the files changed
 ```
 
-Andamento's jobs: `oled_render and_keys and_home and_ext and_ui and_master and_texture`. CI builds
+Andamento's jobs: `oled_render and_keys and_home and_ext and_ui and_pics and_master and_texture`. CI builds
 `platform/daisy` on every pull request and push to `main` (`.github/workflows/daisy-build.yml`).
 
 ## Hardware

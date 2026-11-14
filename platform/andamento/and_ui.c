@@ -625,9 +625,11 @@ static void and_tabs(const char *const *names, uint32_t n, uint32_t cur)
     and_text(AND_W - 6 * (int32_t)strlen(AK_SHORT[and_keys.mode]), AND_TAB_Y + 1, AK_SHORT[and_keys.mode], 4, 4);
 }
 
+#include "and_pics.c"                             /* the pictures: the generators' (Tessera's Mono ones) */
+
 /* the picture (rows 11..51). The setting just turned: its full name, its value twice the size and its dial large.
- * Else, until each page has its own picture (the generators first), the 8 tracks: the number, a block lit while it
- * sounds (5..8: the gate), struck through when muted; ENERGY's level along the foot */
+ * Else on GEN the selected track's generator (and_pics.c). Else, until each page has its own picture, the 8 tracks:
+ * the number, a block lit while it sounds (5..8: the gate), struck through when muted; ENERGY's level along the foot */
 static void and_picture(uint32_t hot)
 {
     uint32_t tr;
@@ -660,6 +662,8 @@ static void and_picture(uint32_t hot)
         }
         return;
     }
+    if (and_ui.page == AB_GEN && and_pic_gen(AND_SEL))
+        return;
     for (tr = 0; tr < AND_TRACKS; tr++) {
         int32_t x0 = (int32_t)tr * 16, sel = tr == AND_SEL;
         uint32_t k, on = 0;
