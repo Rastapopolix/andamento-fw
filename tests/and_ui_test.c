@@ -15,7 +15,9 @@
  *   map       SOUND, MOD and FX from Tessera's PAGES[] (platform/andamento/and_pages.c): every one of an engine's own
  *             pages with a value to set is on one of them (none lost), each cell once a sub-page; LEVEL on AMP,
  *             ENGINE and PRESET on VOICE and they load; an ORACLE / FM6 page's cell writes the patch; FX MODE's SPLIT
- *             shows the three sends */
+ *             shows the three sends
+ *   DATA      turned, the selected track's LEVEL (tracks 5..8: VEL), shown as a setting turned (said on HOME); pushed
+ *             and turned, the page's tabs, round either way; LEVEL left while pushed */
 #include "../web/andamento/sim.c"
 
 #include <stdio.h>
@@ -270,6 +272,61 @@ int main(int argc, char **argv)
     run_ms(1300);
     web_screen();
     CHECK(and_fbs[AND_SCR_DIAL][23][and_cellv[0].x0 - 1] == 0, "1.3 s later: cell A plain again");
+
+    /* DATA: turned, the selected track's LEVEL (shown as a setting turned; its own cell lit on MIX); tracks 5..8 their
+     * VEL; pushed and turned, the page's sub-pages, either way round; letting go changes nothing */
+    {
+        uint32_t lvl = PID_TRACK(P_LEVEL), s0, n;
+        int32_t v0;
+        and_select(0);
+        and_ui.page = AB_FX;
+        btn(AB_MIX);
+        v0 = and_get(lvl, 0);
+        web_data(-5);
+        web_screen();
+        CHECK(and_get(lvl, 0) == v0 - 5, "DATA: track 1's LEVEL down 5 (%d -> %d)", (int)v0, (int)and_get(lvl, 0));
+        CHECK(and_ui.hot_pid == lvl && and_ui.hot == 0, "DATA on MIX: LEVEL's cell A lit, as if its encoder turned");
+        CHECK(peak(AND_SCR_PAGE, 40, AND_PIC_Y + 14, 60, 14) == 15, "DATA: the level large in the picture");
+        dump("data_mix");
+        web_data(5);
+        CHECK(and_get(lvl, 0) == v0, "DATA: back up to %d", (int)v0);
+        run_ms(1300);
+        and_select(NTRK);                        /* (track 5: no voice, its MIDI velocity) */
+        s0 = (uint32_t)and_get(lvl, 0);
+        v0 = and_get(AE_C(AE_VEL), NTRK);
+        web_data(-10);
+        CHECK(and_get(AE_C(AE_VEL), NTRK) == v0 - 10, "DATA on track 5: VEL down 10");
+        CHECK(and_get(lvl, 0) == (int32_t)s0, "DATA on track 5: track 1's LEVEL left");
+        web_data(10);
+        and_select(0);
+        btn(AB_SOUND);
+        n = and_nsub(AB_SOUND);
+        s0 = and_ui.sub[AB_SOUND];
+        CHECK(n > 2u, "SOUND has %u tabs (more than 2)", n);
+        v0 = and_get(lvl, 0);
+        web_data_push(1);
+        web_data(1);
+        CHECK(and_ui.sub[AB_SOUND] == (s0 + 1u) % n, "DATA pushed and turned: the next tab");
+        web_data(-2);
+        CHECK(and_ui.sub[AB_SOUND] == (s0 + n - 1u) % n, "DATA pushed and turned back: round to the one before");
+        web_data((int32_t)n);
+        CHECK(and_ui.sub[AB_SOUND] == (s0 + n - 1u) % n, "DATA pushed and turned a whole round: the same tab");
+        web_data_push(0);
+        CHECK(and_get(lvl, 0) == v0 && !and_ui.data_down, "DATA let go: LEVEL untouched while pushed");
+        web_screen();
+        lint("data tabs");
+        btn(AB_NO);                              /* HOME: the level said in the header */
+        web_data(-1);
+        web_screen();
+        CHECK(and_ui.say && !strncmp(and_ui.say, "T1 LEVEL ", 9), "DATA on HOME: said as \"%s\"", and_ui.say ? and_ui.say : "");
+        dump("data_home");
+        web_data_push(1);
+        web_data(3);                             /* (HOME has no tabs: nothing) */
+        web_data_push(0);
+        CHECK(and_get(lvl, 0) == v0 - 1, "DATA pushed on HOME: LEVEL left");
+        web_data(1);
+        run_ms(1300);
+    }
 
     /* the two frames are separate */
     and_target(AND_SCR_DIAL);
