@@ -9,7 +9,8 @@
  * How they fit. The FM-1 draws a picture in cells of 2 x 2 pixels, 120 wide, on its rows 52..108 (57 rows). Here a
  * cell is a pixel: the width carries over (120 of 128, 4 each side) and the rows are squeezed into 41 (PC_Y), so bars
  * keep their order and proportion, a step its place. Text keeps its 5 x 7 size, placed by its middle; a ring or a dot
- * its size squeezed. Euclid's ring is the one shape drawn round: its x radius is squeezed too.
+ * its size squeezed. Euclid's ring is the one shape drawn round: its x radius is squeezed too. QUAD is drawn for this
+ * screen instead (and_pic_quad), as norns' initenere draws its grid: the FM-1's rows squeezed would touch.
  *
  *   pictures  the pattern (no generator, or a step generator), Turing, Euclid, Grids, Markov, Morph, Bounce (and its
  *             FALL), Awake, Poly, Quad, Constellation, Series, Chord, Answer, and STEP as seed
@@ -353,60 +354,63 @@ static void pc_pic_poly(const gen_poly_t *p)
         else pc_box(x, 107 - h, 22, h, PC_INK);
     }
 }
-/* QUAD: the grid the tracks share, a row a track: T1 and its DIR, its four cells (a bar its pitch, a rest a dash; the
- * cell it plays solid), its RANGE and LINKs (a dot a track, solid when linked); a row not in QUAD dim. Over each column
- * its MOVE (a triangle the way it goes, RAND two dots, STOP a dash), under it its EVERY; the column OCT+ edits marked */
-static void pc_pic_quad(uint32_t tr)
+/* QUAD, drawn for this screen (not squeezed from the FM-1's): as norns' initenere draws its matrix, whose screen is
+ * this one's size. The grid the tracks share, a row a track, 9 px apart: T1 (the track shown boxed) and its DIR, its
+ * four cells as squares, a cell's brightness its pitch (a rest an outline; the cell it plays full; a row not in QUAD
+ * dim), then its RANGE and its LINKs (a dot a track, lit when linked). Over each column its MOVE: a triangle the way it
+ * goes, RAND two dots, STOP a dash (dim). A column's EVERY: not shown (the FM-1 has it under the grid; no room here) */
+#define QP_X 32                                  /* the grid's left, a column's pitch, a cell's width */
+#define QP_DX 13
+#define QP_W 10
+#define QP_Y (AND_PIC_Y + 5)                     /* the first row's top, a row's pitch, a cell's height */
+#define QP_DY 9
+#define QP_H 7
+static void and_pic_quad(uint32_t tr)
 {
     static const char *const QD[GEN_QD_COUNT] = {">", "<", "<>", "?", "="};
     static const char *const QR[GEN_QR_COUNT] = {"3", "1", "2", "+-1"};
-    int layer = 0;                                      /* (the FM-1's column layer: not on Andamento yet) */
     uint32_t r, i, k;
-    for (i = 0; i < 4u; i++) {
-        int32_t x = 30 + (int32_t)i * 18, cx = x + 7;
-        uint32_t mv = tessera.qcol[i] & 3u;
-        int sel = layer && i == (tessera.qcol_sel & 3u);
-        uint32_t c = sel || mv ? PC_INK : PC_DIM;
-        char e[4] = {'/', 0, 0, 0};
+    for (i = 0; i < 4u; i++) {                   /* the columns' MOVE, in the 4 rows over the grid */
+        int32_t cx = QP_X + (int32_t)i * QP_DX + QP_W / 2, y = AND_PIC_Y + 1;
+        uint32_t mv = tessera.qcol[i] & 3u, c = mv ? PC_INK : PC_DIM;
         if (mv == GEN_QC_DOWN || mv == GEN_QC_UP)
             for (k = 0; k < 3u; k++)
-                pc_hl(cx - 2 + (int32_t)k, mv == GEN_QC_DOWN ? 53 + (int32_t)k : 55 - (int32_t)k, 5 - 2 * (int32_t)k, c);
-        else if (mv == GEN_QC_RAND) {
-            pc_px(cx - 2, 53, c);
-            pc_px(cx + 2, 55, c);
-        } else
-            pc_hl(cx - 2, 54, 5, c);
-        fmt_int(e + 1, tessera_quad_every(i));
-        pc_textc(e, cx + 1, 101, c);
-        if (sel) pc_hl(x, 57, 16, PC_INK);
+                and_fill(cx - 2 + (int32_t)k, mv == GEN_QC_DOWN ? y + (int32_t)k : y + 2 - (int32_t)k,
+                         5 - 2 * (int32_t)k, 1, c);
+        else if (mv == GEN_QC_RAND)
+            and_px(cx - 2, y, c), and_px(cx + 2, y + 2, c);
+        else
+            and_fill(cx - 2, y + 1, 5, 1, c);
     }
     for (r = 0; r < TESSERA_TRACKS; r++) {
         const gen_quad_t *q = tessera_quad(r);
         int on = tessera.mode[r] == TESS_ENG_QUAD;
-        int32_t y = 58 + (int32_t)r * 11;              /* (11 cells a row, the FM-1's 10: 8 px apart here) */
-        uint32_t c = on ? PC_TRK(r) : pc_tdim(r);
+        int32_t y = QP_Y + (int32_t)r * QP_DY;
+        uint32_t c = on ? PC_INK : PC_DIM;
         char lb[3] = {'T', (char)('1' + r), 0};
-        if (r == tr)                             /* (the track shown: a bar beside it, rows too close for a box) */
-            pc_text(lb, 2, y, PC_TRK(r)), and_fill(1, pc_ty(y), 2, 7, PC_TRK(r));
-        else pc_text(lb, 2, y, c);
-        pc_text(QD[q->dir % GEN_QD_COUNT], 16, y, c);
-        pc_text(QR[q->range % GEN_QR_COUNT], 102, y, c);
-        for (k = 0; k < TESSERA_TRACKS; k++)            /* (its LINKs, under the RANGE) */
-            if (k != r) pc_px(102 + (int32_t)k * 4, y + 8, on && ((q->link >> k) & 1u) ? PC_TRK(k) : pc_tdim(k));
+        if (r == tr) {                           /* (the track shown: boxed, as the FM-1's) */
+            and_fill(1, y - 1, 13, 9, PC_INK);
+            and_text(2, y, lb, PC_BG, 2);
+        } else
+            and_text(2, y, lb, c, 2);
+        and_text(17, y, QD[q->dir % GEN_QD_COUNT], c, 2);
         for (i = 0; i < 4u; i++) {
-            int32_t x = 30 + (int32_t)i * 18, v = q->cell[i] > 21u ? 21 : q->cell[i], h;
-            int cur = on && i == q->pos;
-            pc_hl(x, y + 8, 16, pc_tdim(r));
-            if (!v) {
-                pc_hl(x + 5, y + 6, 6, cur ? PC_TRK(r) : c);
-                continue;
-            }
-            h = 2 + (v - 1) * 5 / 20;
-            if (cur) pc_fill(x, y + 7 - h, 16, h, PC_TRK(r));
-            else pc_box(x, y + 7 - h, 16, h, c);
+            int32_t x = QP_X + (int32_t)i * QP_DX;
+            uint32_t v = q->cell[i] > 21u ? 21u : q->cell[i], cur = on && i == q->pos;
+            if (!v)                              /* a rest: an outline */
+                and_rect(x, y, QP_W, QP_H, cur ? PC_INK : on ? 4u : 2u);
+            else if (cur)
+                and_fill(x, y, QP_W, QP_H, PC_INK);
+            else                                 /* (its pitch: 1..21 as levels 3..11; dim rows 1..3) */
+                and_fill(x, y, QP_W, QP_H, on ? 3u + (v - 1u) * 8u / 20u : 1u + (v - 1u) * 2u / 20u);
         }
+        and_text(QP_X + 4 * QP_DX + 3, y, QR[q->range % GEN_QR_COUNT], c, 3);
+        for (k = 0; k < TESSERA_TRACKS; k++)     /* its LINKs, a dot a track (its own none) */
+            if (k != r)
+                and_fill(110 + (int32_t)k * 4, y + 3, 2, 2, on && ((q->link >> k) & 1u) ? PC_INK : 2u);
     }
 }
+
 /* CONSTELLATION: the sky scrolling left, the far two layers dim dots; the front layer's stars a plus their size (bright
  * ones and the ones heard ink, the others ahead ink and behind dim); behind the ship the stars it heard joined; the ship
  * mid-sky, its thruster flickering, the brackets SIZE rows round it (dim when the loop plays), the star sounding ringed.
@@ -683,7 +687,7 @@ static int and_pic_gen(uint32_t tr)
         case TESS_ENG_BOUNCE: pc_pic_bounce(tessera_bounce(tr)); return 1;
         case TESS_ENG_AWAKE: pc_pic_awake(tessera_awake(tr)); return 1;
         case TESS_ENG_POLY: pc_pic_poly(tessera_poly(tr)); return 1;
-        case TESS_ENG_QUAD: pc_pic_quad(tr); return 1;
+        case TESS_ENG_QUAD: and_pic_quad(tr); return 1;
         case TESS_ENG_CONSTEL: pc_pic_constel(tr); return 1;
         case TESS_ENG_SERIES: pc_pic_series(tessera_series(tr)); return 1;
         case TESS_ENG_CHORD: pc_pic_chord(tr); return 1;

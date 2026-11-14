@@ -7,7 +7,8 @@
  * Checks, for every generator on track 1 (stopped, and after 3 s playing) and every one tracks 5..8 can run:
  *   drawn     the picture lights something (dim at least: an empty pattern, ANSWER before it hears a phrase)
  *   inside    nothing outside the picture's rows (11..51): its header and tabs are never drawn over
- *   GEN       the page screen on GEN shows it (the 8 tracks' overview only elsewhere) */
+ *   GEN       the page screen on GEN shows it (the 8 tracks' overview only elsewhere)
+ *   QUAD      drawn for this screen (and_pic_quad): a clear row between its four rows, the track shown boxed */
 #include "../web/andamento/sim.c"
 
 #include <stdio.h>
@@ -86,6 +87,15 @@ int main(int argc, char **argv)
         run_ms(3000);
         snprintf(where, sizeof where, "T1 %s playing", name);
         alone(0, where);
+        if (!strcmp(name, "QUAD")) {             /* (alone() left the picture drawn) */
+            uint32_t r, x, lit;
+            for (r = 0; r + 1u < TESSERA_TRACKS; r++) {
+                for (lit = 0, x = 0; x < AND_W; x++)
+                    lit += and_fbs[AND_SCR_PAGE][QP_Y + r * QP_DY + QP_H + 1u][x] != 0;
+                CHECK(!lit, "QUAD: rows %u and %u touch (%u pixels between them)", r + 1u, r + 2u, lit);
+            }
+            CHECK(and_fbs[AND_SCR_PAGE][QP_Y][1] == PC_INK, "QUAD: track 1's row boxed");
+        }
         and_ui.hot_ms = 0;
         web_screen();
         CHECK(and_ui.page == AB_GEN, "%s: on GEN", where);
