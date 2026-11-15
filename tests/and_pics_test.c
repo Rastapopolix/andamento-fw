@@ -64,6 +64,52 @@ static void alone(uint32_t tr, const char *where)
     CHECK(!out, "%s: %u pixels outside the picture's rows", where, out);
 }
 
+/* page p's sub-page with this tab for track 1 (and_nsubs: none) */
+static uint32_t sub_of(uint32_t p, const char *tab)
+{
+    uint32_t k, n = and_nsub(p);
+    for (k = 0; k < n; k++)
+        if (!strcmp(and_subs[k].tab, tab))
+            return k;
+    return and_nsubs;
+}
+/* page p's sub-page sub's own picture for track 1 alone, as alone(): 1 when the page has one, then lit and inside its
+ * rows; its frame on the whole page screen saved as name */
+static int page_alone(uint32_t p, uint32_t sub, const char *where, const char *name)
+{
+    uint32_t x, y, peak = 0, out = 0, n = and_nsub(p);
+    int has;
+    and_target(AND_SCR_PAGE);
+    and_clear();
+    has = sub < n && and_pic_page(p, sub, 0);
+    for (y = 0; y < AND_H; y++)
+        for (x = 0; x < AND_W; x++) {
+            uint32_t l = and_fbs[AND_SCR_PAGE][y][x];
+            if (y < AND_PIC_Y || y > AND_PIC_Y + 40u)
+                out += l != 0;
+            else if (l > peak)
+                peak = l;
+        }
+    if (has) {
+        CHECK(peak >= PC_DIM, "%s: the picture drawn (peak %u)", where, peak);
+        CHECK(!out, "%s: %u pixels outside the picture's rows", where, out);
+    }
+    and_ui.page = (uint8_t)p;
+    and_ui.sub[p] = (uint8_t)sub;
+    and_ui.hot_ms = 0;
+    web_screen();
+    dump(name);
+    return has;
+}
+static uint32_t pic_sum(void)                     /* the picture's rows, summed: did it change */
+{
+    uint32_t x, y, h = 0;
+    for (y = AND_PIC_Y; y <= AND_PIC_Y + 40u; y++)
+        for (x = 0; x < AND_W; x++)
+            h = h * 31u + and_fbs[AND_SCR_PAGE][y][x];
+    return h;
+}
+
 int main(int argc, char **argv)
 {
     const param_desc_t *m;
@@ -131,6 +177,39 @@ int main(int argc, char **argv)
     }
     ae_set(AE_GEN, 0, AE_OFF);
     CHECK(!and_pic_gen(NTRK), "T5 OFF: no picture (the overview instead)");
+
+    /* the pages' own: ENV on AMP (an engine with the shared envelope; FM6 has none), LFO, PIECE */
+    and_select(0);
+    pid_set(AND_PID_MODE, 0, 0);
+    set_engine_of(&trk[0], ENGI_ORACLE);
+    {
+        uint32_t amp = sub_of(AB_SOUND, "AMP"), h0;
+        CHECK(page_alone(AB_SOUND, amp, "ORACLE AMP", "env"), "ORACLE AMP: the envelope's picture");
+        h0 = pic_sum();
+        if (amp < and_nsubs && and_subs[amp].c[0] != PID_NONE) {   /* (the attack: its patch's on ORACLE) */
+            const param_desc_t *d = and_desc(and_subs[amp].c[0], 0);
+            and_set(and_subs[amp].c[0], 0, and_get(and_subs[amp].c[0], 0) > (d->min + d->max) / 2 ? d->min : d->max);
+        }
+        page_alone(AB_SOUND, amp, "ORACLE AMP, attack turned", "env_attack");
+        CHECK(pic_sum() != h0, "ORACLE AMP: the attack turned changes the envelope");
+        set_engine_of(&trk[0], ENGI_FM6);
+        CHECK(!page_alone(AB_SOUND, sub_of(AB_SOUND, "AMP"), "FM6 AMP", "env_fm6"),
+              "FM6 AMP: no shared envelope, no picture (the overview instead)");
+    }
+    btn(AB_PLAY);
+    run_ms(1500);
+    CHECK(page_alone(AB_MOD, 0, "LFO", "lfo"), "MOD's LFO: the LFO's picture");
+    btn(AB_STOP);
+    run_ms(50);
+    tessera.pl_length = 0;
+    CHECK(page_alone(AB_PIECE, 0, "PIECE FREE", "piece_free"), "PIECE: the plan's picture, FREE");
+    tessera.pl_length = 4;
+    page_alone(AB_PIECE, 0, "PIECE 4", "piece");
+    btn(AB_PLAY);
+    run_ms(3000);
+    page_alone(AB_PIECE, 0, "PIECE 4 playing", "piece_playing");
+    btn(AB_STOP);
+    run_ms(50);
 
     if (nfail) {
         printf("and_pics: %u failed\n", nfail);
