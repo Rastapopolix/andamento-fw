@@ -4,9 +4,10 @@
  *
  * A unity build, as firmware/src/melodee.c and tests/hostsim.c are: the engines, voices, mods, the mixer, the
  * sequencer and the generators, with the FM-1's hardware names (fm1_*) given plain stand-ins here, as the host
- * tests give them. No UI, storage or USB yet: main.cpp hands this file one block of CTL samples at a time from
- * libDaisy's audio callback, and a short figure is played on track 1 so the board makes sound on day one. The
- * screen (platform/andamento: a framebuffer, the SSD1322 driver) shows a bring-up card until the UI comes.
+ * tests give them, and Andamento's panel UI (platform/andamento/and_ui.c, with tracks 5..8, the master bus and the
+ * texture engine). No storage or USB yet. main.cpp hands this file one block of CTL samples at a time from libDaisy's
+ * audio callback, the panel's inputs as they come, and asks for the screens about 30 times a second. Until the first
+ * input from the panel, a short figure plays on track 1, so the board makes sound on day one with nothing wired.
  *
  * Built at FS = 48000 (platform/daisy/Makefile: MELODEE_FS for tools/gen_tables.py), the Daisy's codec rate.
  * The FM-1's placements are kept (section, noinline, always_inline): tessera_daisy.lds puts its .audio_text and
@@ -59,6 +60,8 @@ static inline __attribute__((always_inline)) void daisy_irq_on(void)
 }
 #define TESS_IRQ_OFF() daisy_irq_off()
 #define TESS_IRQ_ON() daisy_irq_on()
+#define fm1_irq_off() daisy_irq_off()               /* (the FM-1's names, as ui.c's loads call them) */
+#define fm1_irq_on() daisy_irq_on()
 #define TESS_ENTROPY() (fm1_ms * 2654435761u)
 #include "../../firmware/src/tessera.c"
 #include "../../firmware/src/pat_gen.c"
@@ -68,12 +71,26 @@ static inline __attribute__((always_inline)) void daisy_irq_on(void)
 #include "../../firmware/src/mo_font.h"
 #include "../andamento/and_fb.c"                  /* the screen: a framebuffer of 16 levels */
 #include "../andamento/ssd1322.c"                 /* .. as the SSD1322's bytes (and_spi_cmd / and_spi_data: main.cpp) */
+/* Loading a sound (an engine, a preset) as the FM-1's UI does it, for and_pages.c's ENGINE and PRESET: without the
+ * FM-1's undo levels, which belong to its UI; the cords a sound brought still go (cord.c), as on the FM-1 */
+enum { UNDO_SOUND = 1, UNDO_PAT = 2 };
+static uint8_t sync_reload;                      /* (the web editor's RELOAD: no editor here) */
+static void load_begin(track_t *t, uint32_t what)
+{
+    if (what & UNDO_SOUND)
+        cord_sound_load(trk_index(t));
+}
+static void load_end(track_t *t) { (void)t; }
+#include "../../firmware/src/ui_common.c"
+#define AND_SDRAM __attribute__((section(".sdram_bss")))   /* the texture engine's 2 s capture (and_texture.c) */
+#include "../andamento/and_ui.c"                  /* Andamento's panel: the two screens, encoders, keys (and its parts) */
 
 #include "tessera_core.h"
 
 _Static_assert(FS == 48000, "platform/daisy: build the tables at MELODEE_FS=48000");
 
 static uint32_t daisy_frame;                     /* samples played since tessera_core_init */
+static volatile uint8_t daisy_demo;              /* the figure plays until the panel's first input */
 
 void tessera_core_init(void)
 {
@@ -103,20 +120,30 @@ void tessera_core_init(void)
     t->p[P_RESERVED35] = 28;
     t->p[P_RESERVED36] = 36;
     song.master_q12 = 4096;
+    and_ext_init();                              /* tracks 5..8 (and_ext.c) */
+    and_texture_init();                          /* the texture engine (and_texture.c) */
     daisy_frame = 0;
+    daisy_demo = 1;
 }
 
+/* one block, as web/andamento/sim.c's web_ms: the mix, the master bus, the texture engine, then tracks 5..8's
+ * steps on the clock mix_block moved on */
 void tessera_core_block(int32_t *out)
 {
-    uint32_t f = daisy_frame % (2u * FS), n = 0;  /* tests/hostsim.c's 2 s figure: C4, E4, G4 */
-    if (f > FS / 10 && f < FS / 2)
-        n |= 1u << 7;
-    if (f > FS * 45 / 100 && f < FS * 8 / 10)
-        n |= 1u << 11;
-    if (f > FS * 9 / 10 && f < FS * 12 / 10)
-        n |= 1u << 14;
-    fm1_in.notes = n;
+    if (daisy_demo) {
+        uint32_t f = daisy_frame % (2u * FS), n = 0;  /* tests/hostsim.c's 2 s figure: C4, E4, G4 */
+        if (f > FS / 10 && f < FS / 2)
+            n |= 1u << 7;
+        if (f > FS * 45 / 100 && f < FS * 8 / 10)
+            n |= 1u << 11;
+        if (f > FS * 9 / 10 && f < FS * 12 / 10)
+            n |= 1u << 14;
+        fm1_in.notes = n;
+    }
     mix_block(out, CTL);
+    and_master_block(out, CTL);
+    and_texture_block(out, CTL);
+    and_ext_block();
     daisy_frame += CTL;
 }
 
@@ -132,12 +159,55 @@ void tessera_core_screen_init(void)
     ssd1322_init();
 }
 
-void tessera_core_screen(uint8_t *buf)
+/* the panel's inputs: from the main loop, so with the audio interrupt held off around each (and_ui.c changes the
+ * song and the tracks, which the callback reads; each call is short). The first one ends the figure */
+static void daisy_input(void)
 {
-    static uint8_t on;
-    and_testcard();                              /* (no UI yet: platform/andamento/and_ui.c comes next) */
-    ssd1322_pack(and_fb, buf);
-    ssd1322_frame(buf);
-    if (!on)
-        ssd1322_on(on = 1);
+    if (daisy_demo) {
+        daisy_demo = 0;
+        fm1_in.notes = 0;
+    }
 }
+void tessera_core_enc(uint32_t i, int32_t n) { daisy_irq_off(); daisy_input(); and_enc(i, n); daisy_irq_on(); }
+void tessera_core_enc_push(uint32_t i) { daisy_irq_off(); daisy_input(); and_enc_push(i); daisy_irq_on(); }
+void tessera_core_data(int32_t n) { daisy_irq_off(); daisy_input(); and_data(n); daisy_irq_on(); }
+void tessera_core_data_push(uint32_t down) { daisy_irq_off(); daisy_input(); and_data_push(down); daisy_irq_on(); }
+void tessera_core_button(uint32_t b, uint32_t down) { daisy_irq_off(); daisy_input(); and_button(b, down); daisy_irq_on(); }
+void tessera_core_key(uint32_t k, uint32_t down) { daisy_irq_off(); daisy_input(); and_key(k, down); daisy_irq_on(); }
+void tessera_core_volume(uint32_t v)            /* as web/andamento/sim.c's web_volume: 0..1023, a square law */
+{
+    uint32_t k10 = v > 1023u ? 1023u : v;
+    song.master_q12 = (int32_t)((k10 * k10) >> 8);
+}
+
+/* the screens: and_draw draws both frames; then each is packed and sent in turn (main.cpp selects the panel) */
+void tessera_core_draw(void)
+{
+    and_draw();
+}
+void tessera_core_screen(uint8_t *buf, uint32_t screen)
+{
+    static uint8_t on[AND_NSCR];
+    screen = screen < AND_NSCR ? screen : 0u;
+    ssd1322_pack(and_fbs[screen], buf);
+    ssd1322_frame(buf);
+    if (!on[screen])
+        ssd1322_on(on[screen] = 1);
+}
+void tessera_core_testcard(uint8_t *buf)        /* the bring-up card (and_testcard) on the panel selected */
+{
+    uint8_t (*was)[AND_W] = and_fb;
+    and_fb = and_fbs[AND_SCR_PAGE];
+    and_testcard();
+    and_fb = was;
+    ssd1322_pack(and_fbs[AND_SCR_PAGE], buf);
+    ssd1322_frame(buf);
+    ssd1322_on(1);
+}
+
+/* the lights and tracks 5..8's outputs, for main.cpp to send on */
+uint32_t tessera_core_led_buttons(void) { return and_led_buttons(); }
+const uint8_t *tessera_core_led_keys(void) { return and_led_keys(); }
+uint32_t tessera_core_midi_take(uint8_t *out, uint32_t max) { return and_ext_midi_take(out, max); }
+int32_t tessera_core_cv_mv(uint32_t pair) { return and_ext_cv(pair); }
+uint32_t tessera_core_gate(uint32_t pair) { return (uint32_t)and_ext_gate(pair); }

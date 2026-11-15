@@ -100,11 +100,11 @@ int main(void)
     {
         int16_t snap_buf[AT_BUF];
         uint32_t snap_w;
-        memcpy(snap_buf, and_texture.buf, sizeof and_texture.buf);
+        memcpy(snap_buf, at_buf, sizeof at_buf);
         snap_w = and_texture.w;
         fill_silence(buf, N);
         run_texture(buf, N);
-        CHECK(!memcmp(snap_buf, and_texture.buf, sizeof and_texture.buf) && snap_w == and_texture.w,
+        CHECK(!memcmp(snap_buf, at_buf, sizeof at_buf) && snap_w == and_texture.w,
               "FREEZE: the capture itself does not change while it is on");
     }
 
