@@ -11,12 +11,14 @@
  *   FREE      a demo playing with ARC set: ENERGY's history grows from the left, now a disc at its leading edge;
  *             once full it scrolls, now at the right edge; a rest shows REST in the header and is marked under the arc
  *   piece     a LENGTH set: the SHAPE across the screen, what was played over it up to the play head, the time left */
+#define AND_LINT 1                               /* and_fb.c keeps the text drawn (and_lint.h) */
 #include "../web/andamento/sim.c"
 
 #include <stdio.h>
 
 static uint32_t nfail;
 #define CHECK(c, ...) do { if (!(c)) { nfail++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
+#include "and_lint.h"
 
 static const char *dir;
 static void run_ms(uint32_t ms) { while (ms--) web_ms(); }
@@ -47,6 +49,7 @@ static void dump(const char *name)
     FILE *f;
     const uint8_t *fb = scr();
     uint32_t i;
+    and_lint_text(name);                         /* (the text of the draw just made: and_lint.h) */
     if (!dir)
         return;
     snprintf(p, sizeof p, "%s/ppm/%s.ppm", dir, name);

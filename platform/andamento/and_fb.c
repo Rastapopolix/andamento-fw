@@ -44,10 +44,44 @@ static void and_rect(int32_t x, int32_t y, int32_t w, int32_t h, uint32_t l)
     and_fill(x, y, 1, h, l);
     and_fill(x + w - 1, y, 1, h, l);
 }
+/* The text drawn since and_text_log_reset, for the tests' page-screen lint (tests/and_lint.h): each string's box, its
+ * panel, and whether it was cut (more characters than n allowed). Only in a build that defines AND_LINT (the host
+ * tests): the board and the browser keep nothing. */
+#ifdef AND_LINT
+#define AND_TEXT_LOG 96
+static struct { int32_t x, y, w, h; uint8_t scr, cut; char s[24]; } and_text_log[AND_TEXT_LOG];
+static uint32_t and_text_logn;
+static void and_text_log_reset(void) { and_text_logn = 0; }
+static void and_text_note(int32_t x, int32_t y, int32_t w, int32_t h, const char *s, uint32_t n)
+{
+    uint32_t k, len = 0;
+    while (s[len])
+        len++;
+    if (!len || !n || and_text_logn >= AND_TEXT_LOG)
+        return;
+    and_text_log[and_text_logn].x = x;
+    and_text_log[and_text_logn].y = y;
+    and_text_log[and_text_logn].w = w;
+    and_text_log[and_text_logn].h = h;
+    and_text_log[and_text_logn].scr = and_fb == and_fbs[AND_SCR_DIAL] ? AND_SCR_DIAL : AND_SCR_PAGE;
+    and_text_log[and_text_logn].cut = len > n;
+    for (k = 0; k < len && k < n && k + 1u < sizeof and_text_log[0].s; k++)
+        and_text_log[and_text_logn].s[k] = s[k];
+    and_text_log[and_text_logn].s[k] = 0;
+    and_text_logn++;
+}
+#define AND_TEXT_NOTE(x, y, w, h, s, n) and_text_note(x, y, w, h, s, n)
+#else
+#define and_text_log_reset() ((void)0)
+#define AND_TEXT_NOTE(x, y, w, h, s, n) ((void)0)
+#endif
+
 /* text in the 5 x 7 face, 6 px a character, small letters as capitals; at most n characters; the width drawn */
 static int32_t and_text(int32_t x, int32_t y, const char *s, uint32_t l, uint32_t n)
 {
     int32_t x0 = x;
+    const char *s0 = s;
+    uint32_t n0 = n;
     for (; *s && n; s++, n--, x += 6) {
         uint32_t c = (uint8_t)*s, r, b;
         if (c >= 'a' && c <= 'z')
@@ -59,6 +93,7 @@ static int32_t and_text(int32_t x, int32_t y, const char *s, uint32_t l, uint32_
                 if ((MO_FONT[c - ' '][r] >> (4u - b)) & 1u)
                     and_px(x + (int32_t)b, y + (int32_t)r, l);
     }
+    AND_TEXT_NOTE(x0, y, x - x0 - 1, 7, s0, n0);
     return x - x0;
 }
 /* a line from (x0, y0) to (x1, y1), both ends drawn */
@@ -101,6 +136,8 @@ static void and_dial(int32_t cx, int32_t cy, int32_t r, int32_t v, uint32_t ring
 static int32_t and_text2(int32_t x, int32_t y, const char *s, uint32_t l, uint32_t n)
 {
     int32_t x0 = x;
+    const char *s0 = s;
+    uint32_t n0 = n;
     for (; *s && n; s++, n--, x += 12) {
         uint32_t c = (uint8_t)*s, r, b;
         if (c >= 'a' && c <= 'z')
@@ -112,6 +149,7 @@ static int32_t and_text2(int32_t x, int32_t y, const char *s, uint32_t l, uint32
                 if ((MO_FONT[c - ' '][r] >> (4u - b)) & 1u)
                     and_fill(x + 2 * (int32_t)b, y + 2 * (int32_t)r, 2, 2, l);
     }
+    AND_TEXT_NOTE(x0, y, x - x0 - 2, 14, s0, n0);
     return x - x0;
 }
 static void and_clear(void)

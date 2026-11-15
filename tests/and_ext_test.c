@@ -15,6 +15,7 @@
  *   pages     track 5's GEN page: GEN and its settings, encoder 1 changes the generator; OUT: CHAN and the CV / gate;
  *             LEFT / RIGHT move through all 8 tracks
  *   core      tracks 1..4 play exactly the same with tracks 5..8 running (their notes and the audio, bit for bit) */
+#define AND_LINT 1                               /* and_fb.c keeps the text drawn (and_lint.h) */
 #include "../web/andamento/sim.c"
 
 #include <stdio.h>
@@ -23,6 +24,7 @@
 
 static uint32_t nfail;
 #define CHECK(c, ...) do { if (!(c)) { nfail++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
+#include "and_lint.h"
 
 static const char *dir;
 static void btn(uint32_t b) { web_button(b, 1); web_button(b, 0); }
@@ -90,6 +92,7 @@ static void dump(const char *name)
     FILE *f;
     const uint8_t *fb = web_screen();
     uint32_t i;
+    and_lint_text(name);                         /* (the text of the draw just made: and_lint.h) */
     if (!dir)
         return;
     snprintf(p, sizeof p, "%s/ppm/%s.ppm", dir, name);

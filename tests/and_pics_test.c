@@ -9,12 +9,14 @@
  *   inside    nothing outside the picture's rows (11..51): its header and tabs are never drawn over
  *   GEN       the page screen on GEN shows it (the 8 tracks' overview only elsewhere)
  *   QUAD      drawn for this screen (and_pic_quad): a clear row between its four rows, the track shown boxed */
+#define AND_LINT 1                               /* and_fb.c keeps the text drawn (and_lint.h) */
 #include "../web/andamento/sim.c"
 
 #include <stdio.h>
 
 static uint32_t nfail;
 #define CHECK(c, ...) do { if (!(c)) { nfail++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
+#include "and_lint.h"
 
 static const char *dir;
 static void run_ms(uint32_t ms) { while (ms--) web_ms(); }
@@ -25,6 +27,7 @@ static void dump(const char *name)
     char p[256];
     FILE *f;
     uint32_t i;
+    and_lint_text(name);                         /* (the text of the draw just made: and_lint.h) */
     if (!dir)
         return;
     snprintf(p, sizeof p, "%s/ppm/pic_%s.ppm", dir, name);
