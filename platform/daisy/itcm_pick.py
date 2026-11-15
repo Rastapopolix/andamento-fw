@@ -31,6 +31,9 @@ PICK = [
     'd9_render*', 'd9_env_exp', 'drum909_render*',
     # once a block
     'mod_voice*', 'pl_env', 'cord_block', 'mix_block',
+    # Andamento's master bus and texture engine: a loop over the block each, and nothing at all while MIX is 0 (the
+    # default); last, so they take ITCM only if the core leaves room (measure the load on the board first)
+    'and_master_block', 'and_texture_block', 'at_read', 'at_spawn',
 ]
 
 
