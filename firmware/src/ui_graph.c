@@ -2122,18 +2122,6 @@ static uint32_t graph_sig(int play)
     return h;
 }
 static uint32_t graph_signature(void) { return graph_sig(1); }
-/* 4-letter engine tags of the preset list */
-static const char *eng_abbr(const char *name)
-{
-    static const char *const A[][2] = {{"SAMPLE", "SMPL"}, {"VOICE", "VOCL"}, {"TRIO", "TRIO"}, {"WHEEL", "WHEL"},
-                                       {"GRAIN", "GRAN"}, {"PHYS", "PHYS"}, {"DRUM", "DRUM"},
-                                       {"NOISE", "NOIS"}, {"FM6", "FM6"}, {"SLICE", "SLCE"}};
-    uint32_t i;
-    for (i = 0; i < sizeof A / sizeof A[0]; i++)
-        if (str_eq(name, A[i][0]))
-            return A[i][1];
-    return name;
-}
 
 /* a list row (17 px): the selected one a THEME bar with INK text; tag at x 14, free text from x 54 to x1 */
 #define LIST_Y(k) (3 + 17 * (int32_t)(k))

@@ -111,7 +111,7 @@ static void pc_pic_pattern(const track_t *t)
             fmt_int(b, (int32_t)i + 1);
             pc_text(b, 1, y + (int32_t)sh - 7, PC_DIM);
         }
-        if (step_on(st)) {
+        if (ak_step_on(st)) {                   /* (and_keys.c: step_on is the FM-1 UI's) */
             pc_fill(x, y, 5, (int32_t)sh, PC_INK);
             if (st->flags & SF_ACCENT) pc_fill(x + 1, y + 1, 3, 2, PC_BG);   /* an accent: a notch */
         } else if (st->time == ST_TIE) {
