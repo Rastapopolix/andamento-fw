@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * Copyright (C) 2026 Theo Dainis */
 /* Andamento's panel UI over Tessera's core: two 128 x 64 screens with 16 levels (the yellow NHD-2.7-12864WDY3-M, so
- * Tessera's default Mono ink), 8 data encoders in 2 rows of 4, ENERGY, the 6 page buttons (GEN SOUND MOD FX PIECE
+ * Tessera's default Mono ink), 8 data encoders in 2 rows of 4, ENERGY, DATA, the 6 page buttons (GEN SOUND MOD FX PIECE
  * MIX), FUNC NO YES and the arrows, 16 keys in 2 rows of 8, REC PLAY STOP. For the virtual prototype (web/andamento)
  * and later the Daisy build. The PAGE screen is the FM-1's Mono page at one pixel a cell: Tessera's header (the
  * page's title, the engine, the 8 tracks as marks), a picture, the page's sub-pages as tabs. The DIAL screen sits
@@ -20,6 +20,7 @@
  *                    the external ones (and_ext.c): GEN their generator and clock, SOUND their outputs (OUT)
  *   encoder 1..8     the cell's setting; pushed, back to its default (HOME: tracks 1..8's ENERGY DEPTH)
  *   ENERGY           ENERGY LEVEL on every page
+ *   DATA             the selected track's LEVEL (tracks 5..8: VEL); pushed and turned, the page's sub-pages
  *   keys             SCALE, CHROM, STEP or MUTE (FUNC + key 9..12), and their RGB lights: and_keys.c
  *   FUNC + UP / DOWN the keys' octave, or STEP's 16 steps shown
  *   PLAY / STOP      transport (PLAY while playing restarts) */
@@ -41,6 +42,7 @@ static struct {
     const char *say;                             /* a word for the header (a mode, the octave), until say_ms + 1200 */
     int8_t ext;                                  /* an external track selected (0..3: Andamento's 5..8), else -1:
                                                   * song.sel's, one of Tessera's (the core never sees past NTRK) */
+    uint8_t data_down, data_turned;              /* DATA held; turned while held (so letting go is not a click) */
 } and_ui = {.page = AND_HOME, .hot = -1, .ext = -1};
 
 /* the track selected, 0..7 (5..8 external: and_ext.c), and selecting one */
@@ -300,6 +302,57 @@ static void and_enc_push(uint32_t i)
     and_ui.say_ms = 0;
     if (pid == AND_PID_ENERGY)
         and_keys.energy_ms = fm1_ms | 1u;
+}
+
+/* the DATA encoder, beside the page screen (pushable). Turned: the selected track's level (LEVEL, as on AMP and MIX;
+ * tracks 5..8 have no voice, so their MIDI velocity, VEL). Pushed and turned: the page's sub-pages, as its tabs show
+ * them (FM6's ten SOUND tabs without pressing SOUND ten times). A push without a turn does nothing yet: it is the
+ * YES of the lists to come (engine, preset, project). */
+static void and_data(int32_t n)
+{
+    uint32_t pid, i;
+    if (!n)
+        return;
+    and_cells();
+    if (and_ui.data_down) {
+        uint32_t p = and_ui.page, k;
+        and_ui.data_turned = 1;
+        if (p >= AND_HOME || (k = and_nsub(p)) < 2u)
+            return;
+        and_ui.sub[p] = (uint8_t)(((int32_t)(and_ui.sub[p] % k) + n % (int32_t)k + (int32_t)k) % (int32_t)k);
+        and_ui.hot = -1;
+        and_ui.hot_ms = 0;
+        return;
+    }
+    pid = AND_SEL < NTRK ? PID_TRACK(P_LEVEL) : AE_C(AE_VEL);
+    and_turn(pid, n);
+    and_ui.hot = -1;
+    for (i = 0; i < AND_NENC; i++)               /* (on AMP or MIX: its own cell lights as if its encoder turned) */
+        if (and_ui.cell[i] == pid)
+            and_ui.hot = (int8_t)i;
+    if (and_ui.page == AND_HOME) {               /* (HOME's picture is the piece: the level said in the header) */
+        const param_desc_t *d = and_desc(pid, AND_SEL);
+        char b[16], v[8];
+        const char *unit = "";
+        if (!d)
+            return;
+        param_format(d, and_get(pid, AND_SEL), v, &unit);
+        b[0] = 'T', b[1] = (char)('1' + AND_SEL), b[2] = ' ';
+        str_cpy(b + 3, and_name(pid, AND_SEL), 6);   /* "T1 LEVEL -10dB" */
+        i = (uint32_t)strlen(b);
+        b[i++] = ' ';
+        str_cpy(b + i, v, sizeof b - i);
+        i = (uint32_t)strlen(b);
+        if (unit && unit[0] && i + strlen(unit) < sizeof b)
+            str_cpy(b + i, unit, sizeof b - i);
+        and_ui_say(b);
+    }
+}
+static void and_data_push(uint32_t down)
+{
+    and_ui.data_down = (uint8_t)(down != 0);
+    if (down)
+        and_ui.data_turned = 0;
 }
 
 static void and_track(int32_t d)
