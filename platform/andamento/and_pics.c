@@ -17,8 +17,10 @@
  *   tracks 5..8  their generator (and_ext.c runs Tessera's own: Turing, Euclid, Markov, Awake, Poly, Series)
  *   inks      the FM-1's ink 15, its dim 5, the background 0; a track's own ink (MOSAIC's) is the ink (one ink here)
  *
- * Not yet: ENV, LFO and PIECE's pictures (the next thread), the FM-1's layers drawn over a picture (QUAD's column,
- * the keys' edits). */
+ * The pages' own (and_pic_page): ENV on SOUND's AMP, LFO on MOD's first, PIECE on PIECE's first, the FM-1's too.
+ *
+ * Not yet: FILTER's response, FM6's own envelopes (EG RATE / LVL), the FM-1's layers drawn over a picture (QUAD's
+ * column, the keys' edits). */
 
 #define PC_BG 0u
 #define PC_INK 15u
@@ -655,6 +657,119 @@ static void pc_pic_seed(uint32_t tr)
     if (n) pc_fill(87, 102, (int32_t)(n * 30u / len) ? (int32_t)(n * 30u / len) : 1, 5, PC_INK);
 }
 
+/* ---- the pages' own: ENV (SOUND's AMP), LFO (MOD's first), PIECE (PIECE's first) ---- */
+
+/* ENV: the envelope from its 4 settings (attack, decay, sustain, release, each 0..127 of its range): the curve, the
+ * area under it hatched dim, a point at each corner. The FM-1's mo_pic_env (From Tessera 81aa730f) without the ring
+ * on the setting turning (Andamento shows that setting large while it turns) */
+static void pc_pic_env(int32_t va, int32_t vd, int32_t vs, int32_t vr)
+{
+    int32_t top = 56, bot = 98, x0 = 2, x1 = x0 + 5 + va * 20 / 127, x2 = x1 + 8 + vd * 26 / 127, x4 = 117;
+    int32_t x3 = x4 - 12 - vr * 24 / 127, sus = vs * 1000 / 127, x, py = 0, e = 32768;
+    int32_t kd = 75366 / (x2 - x1), kr = 75366 / (x4 - x3), i;
+#define PCY(l) (bot - (l) * (bot - top) / 1000)
+    for (x = x0; x <= x4; x++) {
+        int32_t l, y, seg = x < x1 ? 0 : x < x2 ? 1 : x < x3 ? 2 : 3;
+        if (seg == 0) l = (x - x0) * 1000 / (x1 - x0);
+        else if (seg == 1) { e = x == x1 ? 32768 : (e * (32768 - kd)) >> 15; l = sus + ((1000 - sus) * e >> 15); }
+        else if (seg == 2) l = sus;
+        else { e = x == x3 ? 32768 : (e * (32768 - kr)) >> 15; l = x == x4 ? 0 : sus * e >> 15; }
+        y = PCY(l);
+        if (y < bot && !(x & 1)) pc_vl(x, y + 1, bot - y, PC_DIM);
+        if (x > x0) pc_line(x - 1, py, x, y, PC_INK);
+        py = y;
+    }
+    pc_hl(x0, bot, x4 - x0 + 1, PC_INK);
+    {
+        const int32_t hx[4] = {x1, x2, x3, x4}, hy[4] = {top, PCY(sus), PCY(sus), bot};
+        for (i = 0; i < 4; i++)
+            pc_disc(hx[i], hy[i], 1, PC_INK);
+    }
+#undef PCY
+}
+
+/* LFO: one cycle of the track's LFO 1 from its PHASE, a dot where it is now; FREE or SYNC and its rate at the foot
+ * left, its value now at the right. The FM-1's mo_pic_lfo (From Tessera 81aa730f) */
+static void pc_pic_lfo(track_t *t)
+{
+    int32_t x, py = 0, uni = t->p[P_LPOL] != 0, z = uni ? 98 : 80, amp = uni ? 40 : 18, now;
+    uint32_t ph = (uint32_t)t->p[P_LPHASE] << 25, step = 0xFFFFFFFFu / 116u;
+    char b[16];
+    const char *unit;
+    pc_dash(2, z, 116, PC_DIM);
+    for (x = 0; x < 116; x++) {                  /* one cycle from PHASE, so the dot crosses it all; */
+        int32_t w = lfo_wave(t, ph + (uint32_t)x * step), y;   /* S&H: this cycle's held value, flat */
+        y = uni ? z - (w + 32768) * amp / 65536 : z - w * amp / 32768;
+        if (x) pc_line(1 + x, py, 2 + x, y, PC_INK);
+        py = y;
+    }
+    now = (int32_t)((t->lfo_ph - ph) / step);    /* where it is (lfo_val: UNI is already 0..+1) */
+    if (now >= 0 && now < 116) {
+        int32_t w = t->lfo_val;
+        pc_vl(2 + now, PC_Y0 + 2, 50, PC_DIM);
+        pc_disc(2 + now, z - w * amp / 32768, 2, PC_INK);
+    }
+    param_format(&TP[P_LSYNC], t->p[P_LSYNC], b + 5, &unit);
+    if (t->p[P_LSYNC]) { b[0] = 'S'; b[1] = 'Y'; b[2] = 'N'; b[3] = 'C'; b[4] = ' '; pc_text(b, 2, 101, PC_DIM); }
+    else pc_text("FREE", 2, 101, PC_DIM);   /* (101, not the FM-1's 102: rows squeezed, its foot inside) */
+    {
+        int32_t v = t->lfo_val * 100 / 32767, a = v < 0 ? -v : v;
+        b[0] = v < 0 ? '-' : '+';
+        b[1] = (char)('0' + a / 100);
+        b[2] = '.';
+        b[3] = (char)('0' + a / 10 % 10);
+        b[4] = (char)('0' + a % 10);
+        b[5] = 0;
+        pc_textr(b, 118, 101, PC_INK);
+    }
+}
+
+/* s seconds as M:SS or H:MM:SS (the FM-1's piece_time, ui_graph.c, which the board's build lacks) */
+static void pc_piece_time(char *b, uint32_t s)
+{
+    char *o = b;
+    if (s >= 3600u) {
+        fmt_int(o, (int32_t)(s / 3600u));
+        o += str_len(o);
+        *o++ = ':';
+        *o++ = (char)('0' + s % 3600u / 600u);
+        *o++ = (char)('0' + s % 600u / 60u);
+    } else {
+        fmt_int(o, (int32_t)(s / 60u));
+        o += str_len(o);
+    }
+    *o++ = ':';
+    *o++ = (char)('0' + s % 60u / 10u);
+    *o++ = (char)('0' + s % 10u);
+    *o = 0;
+}
+/* PIECE: the planner's SHAPE over the piece's LENGTH (dim while FREE, no plan), USER's eight points, where it is now
+ * while playing; at the foot how long it is, or what is left, or ENDED. The FM-1's mo_pic_piece (From Tessera
+ * 81aa730f) without OCT-'s point picker, which is the FM-1's key grammar */
+static void pc_pic_piece(void)
+{
+    uint32_t at = 0, left = 0, on = (uint32_t)tessera_piece_get(&at, &left), set = tessera.pl_length != 0u;
+    int32_t i, py = 0;
+    char b[20];
+    pc_hl(2, 86, 116, PC_DIM);
+    for (i = 0; i < 116; i++) {
+        int32_t y = 86 - tessera_piece_shape((uint32_t)i * 65536u / 115u) * 32 / 32767;
+        if (i) pc_line(1 + i, py, 2 + i, y, set ? PC_INK : PC_DIM);
+        py = y;
+    }
+    if (tessera.pl_shape == PL_USER)
+        for (i = 0; i < 8; i++)
+            pc_disc(2 + i * 115 / 7, 86 - (int32_t)tessera.pl_user[i] * 32 / 100, 2, PC_INK);
+    if (on && song.playing) pc_vl(2 + (int32_t)(at * 115u >> 16), 52, 36, PC_INK);
+    if (!set) str_cpy(b, "FREE", sizeof b);
+    else if (song.playing && !on) str_cpy(b, "ENDED", sizeof b);
+    else {
+        pc_piece_time(b, left);
+        str_cpy(b + str_len(b), song.playing ? " LEFT" : " LONG", 6);
+    }
+    pc_text(b, 2, 92, set ? PC_INK : PC_DIM);
+}
+
 /* ---- which one ---- */
 /* the generator picture of track tr (0..7), on GEN; 0 when it has none to show (tracks 5..8 with the generator OFF) */
 static int and_pic_gen(uint32_t tr)
@@ -697,4 +812,34 @@ static int and_pic_gen(uint32_t tr)
     }
     pc_pic_pattern(&trk[tr % NTRK]);             /* (no generator: the steps as written) */
     return 1;
+}
+
+/* the picture of page p's sub-page sub for track tr (0..3; tracks 5..8 have none of these pages): ENV on SOUND's AMP
+ * when its first row is the envelope's 4 settings, LFO on MOD's first, PIECE on PIECE's first; 0 for the others
+ * (and_ui.c draws its 8 tracks there) */
+static int and_pic_page(uint32_t p, uint32_t sub, uint32_t tr)
+{
+    if (tr >= NTRK || sub >= and_nsubs)
+        return 0;
+    if (p == AB_SOUND && !strcmp(and_subs[sub].tab, "AMP")) {
+        int32_t v[4];
+        uint32_t k;
+        for (k = 0; k < 4u; k++) {
+            const param_desc_t *d = and_subs[sub].c[k] != PID_NONE ? and_desc(and_subs[sub].c[k], tr) : 0;
+            if (!d || d->max <= d->min)
+                return 0;                        /* (FM6: no shared envelope, its own on its operator pages) */
+            v[k] = (clamp(and_get(and_subs[sub].c[k], tr), d->min, d->max) - d->min) * 127 / (d->max - d->min);
+        }
+        pc_pic_env(v[0], v[1], v[2], v[3]);
+        return 1;
+    }
+    if (p == AB_MOD && sub == 0u) {
+        pc_pic_lfo(&trk[tr]);
+        return 1;
+    }
+    if (p == AB_PIECE && sub == 0u) {
+        pc_pic_piece();
+        return 1;
+    }
+    return 0;
 }

@@ -603,10 +603,31 @@ static void and_draw_dials(uint32_t hot)
 
 /* the page screen's header (the FM-1's mo_head): the page's title and the engine dim at the right of it, the 8 tracks as marks (the selected one filled, a sounding one lit, a muted one a dash); a line
  * under it. A word to say (a mode, the octave) or the setting just turned: in the title's place, inverted */
-static void and_head(const char *title, const char *eng)
+/* a title cut short to n characters, never inside a word: at ta (the first of two pages' titles, and_pages.c), else
+ * at the last space that fits; 0 when there is none (a single word longer than n) */
+static int and_title_cut(char *t, uint32_t ta, uint32_t n)
+{
+    uint32_t i = (uint32_t)strlen(t);
+    if (i <= n)
+        return 1;
+    if (ta && ta <= n) {
+        t[ta] = 0;
+        return 1;
+    }
+    for (i = n; i > 0u; i--)
+        if (t[i] == ' ') {
+            t[i] = 0;
+            return 1;
+        }
+    return 0;
+}
+/* The header: the title, the engine dim before the marks, the 8 tracks' marks. A title that doesn't fit beside the
+ * engine takes the engine's room (the engine is VOICE's too, and the marks say which track); one that still doesn't
+ * fit is cut short at a word (and_title_cut), never mid-word: the lint (tests/and_lint.h) checks it */
+static void and_head(const char *title, uint32_t ta, const char *eng)
 {
     uint32_t tr;
-    char e[8];
+    char e[8], t[24];
     if (title[0] == '!') {                       /* (inverted) */
         int32_t w = and_text(2, AND_HEAD_Y, title + 1, 0, 14);
         and_fill(0, 0, w + 3, 9, 15);
@@ -614,10 +635,21 @@ static void and_head(const char *title, const char *eng)
     } else {                                     /* (the title, then the engine dim, right-aligned before the marks;
                                                   * the place among the sub-pages is the tabs', which always fit) */
         int32_t ex = 84;
+        uint32_t room;
         (void)and_fit(e, eng);
+        str_cpy(t, title, sizeof t);
         if (e[0])
-            ex = 84 - (int32_t)strlen(e) * 6 + 1, and_text(ex, AND_HEAD_Y, e, 7, 5);
-        and_text(1, AND_HEAD_Y, title, 15, (uint32_t)((ex - 5) / 6));
+            ex = 84 - (int32_t)strlen(e) * 6 + 1;
+        room = (uint32_t)((ex - 5) / 6);
+        if (strlen(t) > room) {                  /* (the engine's room too: up to x 83) */
+            e[0] = 0;
+            ex = 84;
+            room = (uint32_t)((ex - 5) / 6);
+            (void)and_title_cut(t, ta, room);
+        }
+        if (e[0])
+            and_text(ex, AND_HEAD_Y, e, 7, 5);
+        and_text(1, AND_HEAD_Y, t, 15, room);
     }
     for (tr = 0; tr < AND_TRACKS; tr++) {
         int32_t x = 88 + (int32_t)tr * 5;
@@ -681,7 +713,8 @@ static void and_tabs(const char *const *names, uint32_t n, uint32_t cur)
 #include "and_pics.c"                             /* the pictures: the generators' (Tessera's Mono ones) */
 
 /* the picture (rows 11..51). The setting just turned: its full name, its value twice the size and its dial large.
- * Else on GEN the selected track's generator (and_pics.c). Else, until each page has its own picture, the 8 tracks:
+ * Else on GEN the selected track's generator, on AMP, MOD's LFO and PIECE their own (and_pics.c). Else, until each
+ * page has its own picture, the 8 tracks:
  * the number, a block lit while it sounds (5..8: the gate), struck through when muted; ENERGY's level along the foot */
 static void and_picture(uint32_t hot)
 {
@@ -717,6 +750,8 @@ static void and_picture(uint32_t hot)
     }
     if (and_ui.page == AB_GEN && and_pic_gen(AND_SEL))
         return;
+    if (and_ui.page < 6u && and_ui.ext < 0 && and_pic_page(and_ui.page, and_ui.sub[and_ui.page], AND_SEL))
+        return;
     for (tr = 0; tr < AND_TRACKS; tr++) {
         int32_t x0 = (int32_t)tr * 16, sel = tr == AND_SEL;
         uint32_t k, on = 0;
@@ -749,8 +784,9 @@ static int and_recent(uint32_t t) { return t && (uint32_t)(fm1_ms + 1u - t) < 12
 static void and_draw(void)
 {
     char t[24], eng[8];
-    uint32_t hot = (uint32_t)and_recent(and_ui.hot_ms), say = (uint32_t)and_recent(and_ui.say_ms);
+    uint32_t ta = 0, hot = (uint32_t)and_recent(and_ui.hot_ms), say = (uint32_t)and_recent(and_ui.say_ms);
     uint32_t sel = AND_SEL, p = and_ui.page, s = p < 6u ? and_ui.sub[p] : 0u;
+    and_text_log_reset();                        /* (the tests' lint: the text of this draw only) */
     and_cells();
     and_draw_dials(hot);
     and_target(AND_SCR_PAGE);
@@ -770,17 +806,18 @@ static void and_draw(void)
     } else {
         and_nsub(p);                             /* (and_subs: this page's) */
         str_cpy(t, p == AB_GEN && s == 0u ? and_gen_name(sel) : s < and_nsubs ? and_subs[s].title : "", sizeof t);
+        ta = p == AB_GEN && s == 0u ? 0u : s < and_nsubs ? and_subs[s].ta : 0u;
         if (!t[0] || !strcmp(t, "OFF"))
             str_cpy(t, "STEP", sizeof t);
     }
     if (p == AND_HOME) {                         /* HOME: its own header (the piece's SHAPE and time) and the arc */
-        and_head(say ? t : "", "");
+        and_head(say ? t : "", 0, "");
         if (!say)
             and_home_header();
         and_home_draw();
         return;
     }
-    and_head(t, eng);
+    and_head(t, ta, eng);
     and_picture(hot);
     if (and_ui.ext >= 0)
         and_tabs(&AND_EXT_PAGE[p], 1, 0);

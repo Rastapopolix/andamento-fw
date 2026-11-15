@@ -18,12 +18,14 @@
  *             shows the three sends
  *   DATA      turned, the selected track's LEVEL (tracks 5..8: VEL), shown as a setting turned (said on HOME); pushed
  *             and turned, the page's tabs, round either way; LEVEL left while pushed */
+#define AND_LINT 1                               /* and_fb.c keeps the text drawn (and_lint.h) */
 #include "../web/andamento/sim.c"
 
 #include <stdio.h>
 
 static uint32_t nfail;
 #define CHECK(c, ...) do { if (!(c)) { nfail++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
+#include "and_lint.h"
 
 static const char *dir;
 static void run_ms(uint32_t ms) { while (ms--) web_ms(); }
@@ -111,6 +113,7 @@ static void lint(const char *where)
 static void pframe(const char *where, int tabs)
 {
     uint32_t tr;
+    and_lint_text(where);                        /* (both screens' text: and_lint.h) */
     CHECK(peak(AND_SCR_PAGE, 0, 9, AND_W, 1) == 8, "%s: the header's line", where);
     CHECK(peak(AND_SCR_PAGE, 1, 1, 60, 7) == 15, "%s: a title", where);
     for (tr = 0; tr < AND_TRACKS; tr++)
