@@ -52,13 +52,18 @@ typedef struct {
 
 static struct {
     int16_t v[AT_NPRM];
-    int16_t buf[AT_BUF];
     uint32_t w;                               /* the capture's next write position */
     at_grain_t g[AT_GRAINS];
     uint32_t rnd;                             /* this module's own stream (gen_stream / gen_next): independent
                                                 * of the song's seed, so a run of it alone repeats the same way */
     uint32_t next_in;                         /* samples until a grain may start */
 } and_texture = {.v = {[AT_SIZE] = 80, [AT_DENS] = 20, [AT_POS] = 30, [AT_SPREAD] = 50}, .rnd = 1};
+/* the capture, apart from the settings: 192,000 bytes at 48 kHz, too big for the Daisy's fast memories, so the
+ * platform may place it (platform/daisy: AND_SDRAM, the 64 MB SDRAM; elsewhere plain memory). Starts at zero */
+#ifndef AND_SDRAM
+#define AND_SDRAM
+#endif
+static int16_t AND_SDRAM at_buf[AT_BUF];
 
 static const param_desc_t *at_desc(uint32_t x) { return x < AT_NPRM ? &AT_DESC[x] : &AT_NONE_DESC; }
 static int32_t at_get(uint32_t x) { return x < AT_NPRM ? and_texture.v[x] : 0; }
@@ -73,6 +78,7 @@ static void and_texture_init(void)
 {
     uint32_t k;
     memset(&and_texture, 0, sizeof and_texture);
+    memset(at_buf, 0, sizeof at_buf);
     for (k = 0; k < AT_NPRM; k++)
         at_set(k, AT_DESC[k].def);
     and_texture.rnd = 1;
@@ -121,7 +127,7 @@ static void at_spawn(void)
 static inline float at_read(uint32_t pos_q16)
 {
     uint32_t idx = (pos_q16 >> 16) % AT_BUF, frac = pos_q16 & 0xFFFFu;
-    float a = (float)and_texture.buf[idx], b = (float)and_texture.buf[(idx + 1u) % AT_BUF];
+    float a = (float)at_buf[idx], b = (float)at_buf[(idx + 1u) % AT_BUF];
     return a + (b - a) * ((float)frac * (1.0f / 65536.0f));
 }
 
@@ -140,7 +146,7 @@ static void and_texture_block(int32_t *out, uint32_t n)
         float wl = 0, wr = 0;
         int16_t mono = (int16_t)clamp((l + r) >> 1, -32768, 32767);
         if (!and_texture.v[AT_FREEZE]) {
-            and_texture.buf[and_texture.w] = mono;
+            at_buf[and_texture.w] = mono;
             and_texture.w = (and_texture.w + 1u) % AT_BUF;
         }
         if (and_texture.next_in)
