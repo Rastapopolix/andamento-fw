@@ -35,6 +35,7 @@ enum { AN_ENGINE, AN_PRESET, AN_FMOP, AN_NPRM };
 
 typedef struct {
     char title[16];                              /* the header's: the two FM-1 pages' titles ("OSC TONE") */
+    uint8_t ta;                                  /* .. the first one's length (0: one title): where to cut it short */
     char tab[6];                                 /* the tab's: 4 letters */
     uint16_t c[8];                               /* the 8 encoders' cells, row A then row B (PID_NONE: empty) */
 } and_sub_t;
@@ -241,6 +242,7 @@ static void and_sub_rows(const char *title, const char *tab, const uint16_t *a, 
         return;
     s = &and_subs[and_nsubs++];
     str_cpy(s->title, title, sizeof s->title);
+    s->ta = 0;
     str_cpy(s->tab, tab, sizeof s->tab);
     if (!keep && !ap_row_any(a))
         a = b, b = 0;
@@ -262,7 +264,8 @@ static const char *ap_title(uint32_t i)
                                                               : PAGES[i].title;
     return PAGES[i].title;
 }
-static void ap_pair_title(char *t, uint32_t a, uint32_t b)
+/* -> the first title's length (with the operator's), where and_head cuts it short if both don't fit; 0: one title */
+static uint32_t ap_pair_title(char *t, uint32_t a, uint32_t b)
 {
     uint32_t n = 0;
     t[0] = 0;
@@ -270,8 +273,11 @@ static void ap_pair_title(char *t, uint32_t a, uint32_t b)
         str_cpy(t, AN_OPS[fm6_opsel % 6u], 16), str_cpy(t + 3, " ", 13), n = 4;
     str_cpy(t + n, ap_title(a), 16 - n);
     n = (uint32_t)strlen(t);
-    if (b < NPAGES && n + 2u < 16u)
+    if (b < NPAGES && n + 2u < 16u) {
         t[n] = ' ', str_cpy(t + n + 1u, ap_title(b), 15 - n);
+        return n;
+    }
+    return 0;
 }
 
 /* SOUND's synth pages: the engine's FAM_EDIT pages (the others are FILTER's, AMP's, VOICE's, MOD's), two at a time */
@@ -307,11 +313,12 @@ static void and_map_sound(void)
             uint32_t s0 = and_nsubs;
             ap_row(a, pg[0]);
             ap_row(b, np == 2u ? pg[1] : NPAGES);
-            ap_pair_title(t, pg[0], np == 2u ? pg[1] : NPAGES);
+            uint32_t ta = ap_pair_title(t, pg[0], np == 2u ? pg[1] : NPAGES);
             tab[0] = 'S', tab[1] = (char)('1' + n), tab[2] = 0;
             and_sub_add(t, tab, a, b);
             if (and_nsubs > s0) {                /* (FM6's operator: on the first empty cell of its last pair) */
                 and_sub_t *s = &and_subs[and_nsubs - 1u];
+                s->ta = (uint8_t)ta;
                 if (PAGES[pg[np - 1u]].scope == SC_FMOP)
                     for (k = 0; k < 8u; k++)
                         if (s->c[k] == PID_NONE && (k == 7u || s->c[k + 1u] == PID_NONE)) {
