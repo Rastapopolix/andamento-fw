@@ -15,8 +15,6 @@ CPP_SOURCES = main.cpp
 C_SOURCES = tessera_core.c
 C_INCLUDES = -I$(GEN) -I$(TESSERA)/firmware/src -I.
 C_DEFS = -DMELODEE_USB_HOST=0 -DMELODEE_USB_AUDIO=0 -DMELODEE_ACCESS=0
-# (Tessera's warnings are checked by its own builds)
-CFLAGS += -w
 
 # libDaisy's QSPI memory map with Tessera's audio path in ITCM and DTCM (tessera_daisy.lds)
 ifneq ($(APP_TYPE),BOOT_QSPI)
@@ -26,6 +24,12 @@ LDSCRIPT = tessera_daisy.lds
 
 SYSTEM_FILES_DIR = $(LIBDAISY_DIR)/core
 include $(SYSTEM_FILES_DIR)/Makefile
+
+# Tessera's warnings are checked by its own builds, so the kinds its sources raise here are off (after libDaisy's
+# flags, whose -Wall would turn them back on). A call to a function this build lacks stops it: under -w it compiled as
+# an implicit declaration and failed only at the link, or not at all while nothing called it yet
+CFLAGS += -Wno-unused-function -Wno-unused-variable -Wno-misleading-indentation -Wno-enum-compare -Wno-parentheses
+C_STANDARD += -Werror=implicit-function-declaration   # (C only: C_STANDARD is libDaisy's C-only flags)
 
 # ITCM: what fits of the audio path, picked from the compiled core (itcm_pick.py; tessera_daisy.lds includes it)
 LDFLAGS += -L$(BUILD_DIR)
