@@ -14,7 +14,6 @@
  *
  *   pictures  the pattern (no generator, or a step generator), Turing, Euclid, Grids, Markov, Morph, Bounce (and its
  *             FALL), Awake, Poly, Quad, Constellation, Series, Chord, Answer, and STEP as seed
- *   tracks 5..8  their generator (and_ext.c runs Tessera's own: Turing, Euclid, Markov, Awake, Poly, Series)
  *   inks      the FM-1's ink 15, its dim 5, the background 0; a track's own ink (MOSAIC's) is the ink (one ink here)
  *
  * The pages' own (and_pic_page), the FM-1's too: ENV on SOUND's AMP, FILTER's response on SOUND's FILT (an engine with
@@ -360,7 +359,8 @@ static void pc_pic_poly(const gen_poly_t *p)
 /* QUAD, drawn for this screen (not squeezed from the FM-1's): as norns' initenere draws its matrix, whose screen is
  * this one's size. The grid the tracks share, a row a track, 9 px apart: T1 (the track shown boxed) and its DIR, its
  * four cells as squares, a cell's brightness its pitch (a rest an outline; the cell it plays full; a row not in QUAD
- * dim), then its RANGE and its LINKs (a dot a track, lit when linked). Over each column its MOVE: a triangle the way it
+ * dim), then its RANGE and its LINKs (a dot a track, lit when linked). Four rows fit: tracks 1..4, or 5..8 when the
+ * track shown is one of those. Over each column its MOVE: a triangle the way it
  * goes, RAND two dots, STOP a dash (dim). A column's EVERY: not shown (the FM-1 has it under the grid; no room here) */
 #define QP_X 32                                  /* the grid's left, a column's pitch, a cell's width */
 #define QP_DX 13
@@ -372,7 +372,7 @@ static void and_pic_quad(uint32_t tr)
 {
     static const char *const QD[GEN_QD_COUNT] = {">", "<", "<>", "?", "="};
     static const char *const QR[GEN_QR_COUNT] = {"3", "1", "2", "+-1"};
-    uint32_t r, i, k;
+    uint32_t r, i, k, r0 = tr < TESSERA_TRACKS ? tr & ~3u : 0u;
     for (i = 0; i < 4u; i++) {                   /* the columns' MOVE, in the 4 rows over the grid */
         int32_t cx = QP_X + (int32_t)i * QP_DX + QP_W / 2, y = AND_PIC_Y + 1;
         uint32_t mv = tessera.qcol[i] & 3u, c = mv ? PC_INK : PC_DIM;
@@ -385,10 +385,10 @@ static void and_pic_quad(uint32_t tr)
         else
             and_fill(cx - 2, y + 1, 5, 1, c);
     }
-    for (r = 0; r < TESSERA_TRACKS; r++) {
+    for (r = r0; r < r0 + 4u && r < TESSERA_TRACKS; r++) {
         const gen_quad_t *q = tessera_quad(r);
         int on = tessera.mode[r] == TESS_ENG_QUAD;
-        int32_t y = QP_Y + (int32_t)r * QP_DY;
+        int32_t y = QP_Y + (int32_t)(r - r0) * QP_DY;
         uint32_t c = on ? PC_INK : PC_DIM;
         char lb[3] = {'T', (char)('1' + r), 0};
         if (r == tr) {                           /* (the track shown: boxed, as the FM-1's) */
@@ -410,7 +410,7 @@ static void and_pic_quad(uint32_t tr)
         and_text(QP_X + 4 * QP_DX + 3, y, QR[q->range % GEN_QR_COUNT], c, 3);
         for (k = 0; k < TESSERA_TRACKS; k++)     /* its LINKs, a dot a track (its own none) */
             if (k != r)
-                and_fill(110 + (int32_t)k * 4, y + 3, 2, 2, on && ((q->link >> k) & 1u) ? PC_INK : 2u);
+                and_fill(104 + (int32_t)k * 3, y + 3, 2, 2, on && ((q->link >> k) & 1u) ? PC_INK : 2u);
     }
 }
 
@@ -843,21 +843,9 @@ static void pc_pic_piece(void)
 }
 
 /* ---- which one ---- */
-/* the generator picture of track tr (0..7), on GEN; 0 when it has none to show (tracks 5..8 with the generator OFF) */
+/* the generator picture of track tr (0..7), on GEN */
 static int and_pic_gen(uint32_t tr)
 {
-    if (tr >= NTRK) {                            /* tracks 5..8: Tessera's generators, run by and_ext.c */
-        ae_track_t *x = &and_ext.t[(tr - NTRK) % AE_N];
-        switch (x->gen) {
-        case AE_TURING: pc_pic_turing(&x->turing); return 1;
-        case AE_EUCLID: pc_pic_euclid(&x->euclid); return 1;
-        case AE_MARKOV: pc_pic_markov(&x->markov); return 1;
-        case AE_AWAKE: pc_pic_awake(&x->awake); return 1;
-        case AE_POLY: pc_pic_poly(&x->poly); return 1;
-        case AE_SERIES: pc_pic_series(&x->series); return 1;
-        default: return 0;
-        }
-    }
     if (tr < TESSERA_TRACKS && tessera.mode[tr] != TESS_ENG_OFF) {
         uint8_t now[16], home[16];
         uint32_t at;
@@ -886,7 +874,7 @@ static int and_pic_gen(uint32_t tr)
     return 1;
 }
 
-/* the picture of page p's sub-page sub for track tr (0..3; tracks 5..8 have none of these pages): ENV on SOUND's AMP
+/* the picture of page p's sub-page sub for track tr (0..7): ENV on SOUND's AMP
  * when its first row is the envelope's 4 settings, the response on SOUND's FILTER when the engine has a cutoff, FM6's
  * envelope on its EG sub-pages, LFO on MOD's first, PIECE on PIECE's first; 0 for the others (and_ui.c draws its 8
  * tracks there) */

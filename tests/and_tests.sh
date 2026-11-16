@@ -13,7 +13,7 @@
 # ANDAMENTO (48 kHz, the virtual prototype's build flags, as web/andamento/build.sh):
 #   oled_render   the SSD1322 driver through a model of the controller, each frame read back (tests/oled_render.c)
 #   and_keys      the 16 keys and their RGB lights           and_home     HOME, DEPTH, the 8 lanes, ENERGY's arc
-#   and_ext       tracks 5..8: MIDI, CV / gate, 1..4 unchanged  and_ui     both screens on every page, their layout
+#   and_out       8 tracks: SOUND, MIDI, CV / gate           and_ui     both screens on every page, their layout
 #   and_pics      the generators' pictures on GEN            and_master   the master bus (tilt EQ, compressor)
 #   and_texture   the texture engine                     and_macro    the MACRO engine (Plaits, C++: needs c++)
 #   and_project   the project file: round trip, unknowns skipped, refusals, the golden tests/fixtures/andp_v1.and
@@ -42,7 +42,7 @@ PARALLEL=${PARALLEL:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
 QUIET=1
 PIL=0; python3 -c "import PIL" 2>/dev/null && PIL=1
 
-JOBS="oled_render and_keys and_home and_ext and_ui and_pics and_master and_texture and_macro and_project and_voice
+JOBS="oled_render and_keys and_home and_out and_ui and_pics and_master and_texture and_macro and_project and_voice
     regress fs_test gen_test chain_test entries_test planner_test split_test recipes_test
     pid_test cord_test help_pack_test tables_test mod_test mod_spread_test fm6_test drum_test chord_test"
 WANT=
@@ -91,7 +91,7 @@ job_oled_render() {
 job_and_keys() { echo "== Andamento keys: SCALE, CHROM, STEP, MUTE, their RGB lights, ENERGY, activity"
     build and_keys and_keys_test -O1 $AND && { "$OUT/and_keys" || fail "and_keys"; }; }
 job_and_home() { J0=and_home_test screen_of "Andamento home: HOME and NO, DEPTH, the 8 lanes, ENERGY's arc FREE and planned, a rest"; }
-job_and_ext() { J0=and_ext_test screen_of "Andamento tracks 5..8: MIDI 5..8, CV / gate, STOP, MUTE, ENERGY, keys, pages, 1..4 unchanged"; }
+job_and_out() { J0=and_out_test screen_of "Andamento outputs: 8 tracks, SOUND, MIDI CH, CV / gate, STOP, MUTE, keys, MIX OUT, 1..4 unchanged"; }
 job_and_ui() { J0=and_ui_test screen_of "Andamento screens: the page and dial screens on every page, their layout, a setting turned"; }
 job_and_pics() { J0=and_pics_test screen_of "Andamento pictures: every generator's on GEN, drawn and inside its rows"; }
 screen_of() {                                     # an and_*_test.c whose binary is the job's name

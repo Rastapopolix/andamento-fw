@@ -37,7 +37,7 @@ void tessera_core_testcard(uint8_t *buf); /* the bring-up card (and_testcard), p
 uint32_t tessera_core_led_buttons(void);               /* bit per AB_* button */
 const uint8_t *tessera_core_led_keys(void);            /* 16 x RGB, 0..255 a channel, bottom row first */
 uint32_t tessera_core_midi_take(uint8_t *out, uint32_t max); /* up to max 3-byte messages; how many */
-int32_t tessera_core_cv_mv(uint32_t pair);             /* CV in mV, 1 V/oct, 0 V = MIDI 36 (assumed, see and_ext.c) */
+int32_t tessera_core_cv_mv(uint32_t pair);             /* CV in mV, 1 V/oct, 0 V = MIDI 36 (assumed, see and_out.c) */
 uint32_t tessera_core_gate(uint32_t pair);             /* 1 while its note sounds */
 
 /* main.cpp provides these to the screen driver (platform/andamento/ssd1322.c): its SPI, DC low / DC high, to the

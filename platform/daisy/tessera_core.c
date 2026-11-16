@@ -94,13 +94,14 @@ static volatile uint8_t daisy_demo;              /* the figure plays until the p
 
 void tessera_core_init(void)
 {
-    uint32_t i;
+    uint32_t i, k;
     track_t *t = &trk[0];
     dsp_tables_init();                           /* the RAM tables (fm1_main on the FM-1) */
     for (i = 0; i < G_COUNT; i++)
         song.g[i] = GP[i].def;
-    for (i = 0; i < P_E0; i++)
-        t->p[i] = TP[i].def;
+    for (k = 0; k < NTRK; k++)                   /* (every track's common settings; tracks 5..8: and_out.c's start) */
+        for (i = 0; i < P_E0; i++)
+            trk[k].p[i] = TP[i].def;
     t->eng_req = t->engine = ENGI_FM6;           /* FM6, its first preset, as tests/hostsim.c */
     for (i = 0; i < 8; i++)
         t->p[P_E0 + i] = ENGINES[ENGI_FM6]->edit[i].def;
@@ -120,14 +121,14 @@ void tessera_core_init(void)
     t->p[P_RESERVED35] = 28;
     t->p[P_RESERVED36] = 36;
     song.master_q12 = 4096;
-    and_ext_init();                              /* tracks 5..8 (and_ext.c) */
+    and_out_init();                              /* the tracks' outputs, tracks 5..8's start (and_out.c) */
     and_texture_init();                          /* the texture engine (and_texture.c) */
     daisy_frame = 0;
     daisy_demo = 1;
 }
 
-/* one block, as web/andamento/sim.c's web_ms: the mix, the master bus, the texture engine, then tracks 5..8's
- * steps on the clock mix_block moved on */
+/* one block, as web/andamento/sim.c's web_ms: the mix (every track, its notes out of MIDI and CV too: and_out.c), the
+ * master bus, the texture engine */
 void tessera_core_block(int32_t *out)
 {
     if (daisy_demo) {
@@ -143,7 +144,6 @@ void tessera_core_block(int32_t *out)
     mix_block(out, CTL);
     and_master_block(out, CTL);
     and_texture_block(out, CTL);
-    and_ext_block();
     daisy_frame += CTL;
 }
 
@@ -205,9 +205,9 @@ void tessera_core_testcard(uint8_t *buf)        /* the bring-up card (and_testca
     ssd1322_on(1);
 }
 
-/* the lights and tracks 5..8's outputs, for main.cpp to send on */
+/* the lights and the tracks' outputs (and_out.c), for main.cpp to send on */
 uint32_t tessera_core_led_buttons(void) { return and_led_buttons(); }
 const uint8_t *tessera_core_led_keys(void) { return and_led_keys(); }
-uint32_t tessera_core_midi_take(uint8_t *out, uint32_t max) { return and_ext_midi_take(out, max); }
-int32_t tessera_core_cv_mv(uint32_t pair) { return and_ext_cv(pair); }
-uint32_t tessera_core_gate(uint32_t pair) { return (uint32_t)and_ext_gate(pair); }
+uint32_t tessera_core_midi_take(uint8_t *out, uint32_t max) { return and_out_midi_take(out, max); }
+int32_t tessera_core_cv_mv(uint32_t pair) { return and_out_cv(pair); }
+uint32_t tessera_core_gate(uint32_t pair) { return (uint32_t)and_out_gate(pair); }

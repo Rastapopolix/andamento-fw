@@ -12,8 +12,8 @@
  *                  now at the right edge); stopped, one turn of the tide ahead, dim. Under it a mark where the notes rested; above it a tick where Entries moved a track
  *   the 8 tracks   16 px each: the number (the selected one lit), a meter of how far the track is in (Entries' fade:
  *                  full in, empty out), lit while it sounds, blinking before Entries changes it, struck through when
- *                  muted; along the foot its ENERGY DEPTH. 5..8, the external tracks (and_ext.c), Entries does
- *                  not move: the meter full, lit while the gate is high, the CV (0..10 V) a dark line across it
+ *                  muted; along the foot its ENERGY DEPTH. A track out of a CV pair (and_out.c): the CV (0..10 V) a
+ *                  dark line across the meter while its gate is high
  *
  * Controls on HOME: encoders A..H are tracks 1..8's ENERGY DEPTH (pushed: back to 100); ENERGY, the keys, the arrows
  * and the transport as on every page. NO comes back here from any page; Andamento starts here. */
@@ -218,20 +218,15 @@ static void and_home_draw(void)
             and_fill(x0 + 1, AH_LANE_Y, 15, 9, 15);
         and_text(x0 + 6, AH_LANE_Y + 1, s, sel ? 0 : 12, 1);
         {
-            uint32_t k, on = 0, muted = (uint32_t)and_muted(tr), w = tr < NTRK && (warn >> tr & 1u) && blink;
-            int32_t gain = muted ? 0 : tr < TESSERA_TRACKS ? entry_gain[tr] : 32768, h;
-            int32_t depth = tr < NTRK ? pid_get(AND_PID_DEPTH, tr) : ae_get(AE_DEPTH, tr - NTRK);
-            if (tr < NTRK)
-                for (k = 0; k < NVOICE; k++)
-                    on += trk[tr].v[k].active;
-            else
-                on = (uint32_t)and_ext_gate(tr - NTRK);
+            uint32_t on = (uint32_t)and_out_on(tr), muted = (uint32_t)and_muted(tr), w = (warn >> tr & 1u) && blink;
+            int32_t gain = muted ? 0 : tr < TESSERA_TRACKS ? entry_gain[tr] : 32768, h, pr = and_out_pair_of(tr);
+            int32_t depth = pid_get(AND_PID_DEPTH, tr);
             and_rect(x0 + 2, AH_LANE_Y + 10, 13, 13, w ? 13 : 4);
             h = gain * 11 / 32768;
             if (h)
                 and_fill(x0 + 3, AH_LANE_Y + 22 - h, 11, h, on ? 15 : 7);
-            if (tr >= NTRK && on && h)           /* (external: the CV, 0..10 V, a dark line across the meter) */
-                and_fill(x0 + 3, AH_LANE_Y + 21 - and_ext_cv(tr - NTRK) * 10 / AE_CV_MAX, 11, 1, 2);
+            if (pr >= 0 && and_out_gate((uint32_t)pr) && and_out.pair[pr].tr == tr && h)   /* (its CV, 0..10 V) */
+                and_fill(x0 + 3, AH_LANE_Y + 21 - and_out_cv((uint32_t)pr) * 10 / AO_CV_MAX, 11, 1, 2);
             if (muted)                           /* (muted: struck through) */
                 for (i = 0; i < 13u; i++)
                     and_px(x0 + 2 + (int32_t)i, AH_LANE_Y + 22 - (int32_t)i, 11);
@@ -241,11 +236,11 @@ static void and_home_draw(void)
     }
 }
 
-/* encoder i on HOME: track i's ENERGY DEPTH (pushed: back to its default); 5..8 the external tracks' own */
+/* encoder i on HOME: track i's ENERGY DEPTH (pushed: back to its default) */
 static void and_home_enc(uint32_t i, int32_t n, int push)
 {
     const param_desc_t *d;
-    uint32_t pid = i >= NTRK ? AE_PID + AE_DEPTH : AND_PID_DEPTH;
+    uint32_t pid = AND_PID_DEPTH;
     if (i >= AND_TRACKS || !(d = and_desc(pid, i)))
         return;
     and_set(pid, i, push ? d->def : and_get(pid, i) + n);

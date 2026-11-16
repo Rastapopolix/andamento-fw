@@ -56,8 +56,8 @@ static void snap(snap_t *s)
     for (k = 0; k < AT_NPRM; k++)
         snap_put(s, SONG, AT_PID + k, at_get(k));
     snap_put(s, SONG, AS_PID + AS_SEL, (int32_t)AND_SEL);
-    for (t = 0; t < AND_TRACKS; t++) {
-        if (t < NTRK) {
+    for (t = 0; t < NTRK; t++) {
+        {
             snap_put(s, t, AS_PID + AS_ENGINE, trk[t].eng_req);
             snap_put(s, t, AS_PID + AS_PRESET, trk[t].preset);
             snap_put(s, t, AS_PID + AS_PATTERN, trk[t].pattern);
@@ -74,12 +74,8 @@ static void snap(snap_t *s)
                 for (k = 0; k < NSTEP; k++)
                     CHECK(andp_step_pack(o + 9 + k * ANDP_STEP_BYTES, &st[k]), "track %u pattern %u step %u packs", t, b, k);
             }
-        } else {
-            for (k = 0; k < AE_NPRM; k++)
-                snap_put(s, t, AE_PID + k, ae_get(k, t - NTRK));
-            for (k = 0; k < 3u * (AE_GENS - 1u); k++)
-                snap_put(s, t, AE_PID + AE_GPS + k, ae_get(AE_GPS + k, t - NTRK));
         }
+        snap_put(s, t, AO_PID + AO_CV, ao_get(AO_CV, t));
     }
     memcpy(s->name, andp_name, sizeof s->name);
 }
@@ -175,14 +171,8 @@ static void busy(void)
         am_set(k, pick(&AM_DESC[k]));
     for (k = 0; k < AT_NPRM; k++)
         at_set(k, pick(&AT_DESC[k]));
-    for (t = 0; t < AE_N; t++) {
-        for (k = 0; k < AE_NPRM; k++)
-            if (k < AE_P1 || k > AE_P3)
-                ae_set(k, t, pick(ae_desc(k, t)));
-        ae_set(AE_GEN, t, 1u + t);
-        for (k = 0; k < 3u * (AE_GENS - 1u); k++)
-            ae_set(AE_GPS + k, t, pick(ae_desc(AE_GPS + k, t)));
-    }
+    for (t = 0; t < NTRK; t++)                       /* (the outputs: a CV pair each, some none) */
+        ao_set(AO_CV, t, (int32_t)((t * 3u + 1u) % (AO_PAIRS + 1u)));
     and_select(6);
     andp_set_name("STILL TIDE 2");
 }
@@ -208,7 +198,7 @@ static void test_round_trip(void)
     printf("  a busy project: %u bytes, %u values\n", n1, s1.n);
     andp_defaults();
     snap(&s0);
-    CHECK(snap_diff(&s1, &s0, 0, "", 0, 0) > 100u, "the reset changed the music (else the round trip proves nothing)");
+    CHECK(s1.n != s0.n || snap_diff(&s1, &s0, 0, "", 0, 0) > 100u, "the reset changed the music (else the round trip proves nothing)");
     CHECK(andp_load(f1, n1) == ANDP_OK, "the busy project loads");
     snap(&s2);
     d = snap_diff(&s1, &s2, 12, "round trip", 0, 0);
@@ -240,7 +230,7 @@ static void test_skipped_defaults_clamped(void)
     tc = andp_begin(&w, ANDP_ID('T', 'R', 'A', 'K')); /* a track this build doesn't have */
     andp_byte(&w, 12);
     c = andp_begin(&w, ANDP_ID('P', 'R', 'M', 'S'));
-    andp_pair(&w, AE_PID + AE_CHAN, 3);
+    andp_pair(&w, AO_PID + AO_CV, 3);
     andp_end(&w, c);
     andp_end(&w, tc);
     tc = andp_begin(&w, ANDP_ID('T', 'R', 'A', 'K')); /* track 2: one setting, an unknown sub-chunk, a pattern of a
@@ -379,7 +369,17 @@ static void test_golden(const char *path)
           "track 1's step 6 (C4, velocity 99)");
     CHECK(trk[1].pattern == 3u, "track 2 playing pattern 4");
     CHECK(AND_SEL == 6u, "track 7 selected");
-    CHECK(ae_get(AE_GEN, 2) == 3, "track 7's generator (MARKOV)");
+    /* (tracks 5..8 were and_ext.c's then, saved as its AE pids: mapped onto the core's) */
+    CHECK(pid_get(PID_TESS(TX_MODE), 4) == TESS_ENG_TURING && pid_get(PID_TESS(TX_MODE), 5) == TESS_ENG_EUCLID &&
+          pid_get(PID_TESS(TX_MODE), 6) == TESS_ENG_MARKOV && pid_get(PID_TESS(TX_MODE), 7) == TESS_ENG_AWAKE,
+          "tracks 5..8's generators (TURING, EUCLID, MARKOV, AWAKE: %d %d %d %d)", pid_get(PID_TESS(TX_MODE), 4),
+          pid_get(PID_TESS(TX_MODE), 5), pid_get(PID_TESS(TX_MODE), 6), pid_get(PID_TESS(TX_MODE), 7));
+    for (n = 4; n < NTRK; n++) {
+        CHECK(pid_get(AO_PID_SOUND, n) == 1 && and_out_pair_of(n) == (int32_t)n - 4,
+              "track %u: SOUND OFF, CV pair %u", n + 1u, n - 3u);
+        CHECK(trk[n].p[P_ROOT] == trk[0].p[P_ROOT] && trk[n].p[P_SCALE] == trk[0].p[P_SCALE],
+              "track %u: in track 1's scale", n + 1u);
+    }
 }
 
 int main(int argc, char **argv)

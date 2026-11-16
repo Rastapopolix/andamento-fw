@@ -148,7 +148,7 @@ int main(int argc, char **argv)
         alone(0, where);
         if (!strcmp(name, "QUAD")) {             /* (alone() left the picture drawn) */
             uint32_t r, x, lit;
-            for (r = 0; r + 1u < TESSERA_TRACKS; r++) {
+            for (r = 0; r + 1u < 4u; r++) {               /* (four rows: tracks 1..4) */
                 for (lit = 0, x = 0; x < AND_W; x++)
                     lit += and_fbs[AND_SCR_PAGE][QP_Y + r * QP_DY + QP_H + 1u][x] != 0;
                 CHECK(!lit, "QUAD: rows %u and %u touch (%u pixels between them)", r + 1u, r + 2u, lit);
@@ -167,26 +167,25 @@ int main(int argc, char **argv)
     }
     pid_set(AND_PID_MODE, 0, 0);
 
-    for (g = AE_OFF + 1u; g < AE_GENS; g++) {   /* tracks 5..8: track 5 with each generator it can run */
-        ae_set(AE_GEN, 0, (int32_t)g);
+    for (g = 0; g < 4u; g++) {                   /* tracks 5..8 are the core's: track 5 with each of their generators */
+        static const uint8_t GEN[4] = {TESS_ENG_TURING, TESS_ENG_EUCLID, TESS_ENG_MARKOV, TESS_ENG_AWAKE};
+        static const char *const NAME[4] = {"turing", "euclid", "markov", "awake"};
+        pid_set(AND_PID_MODE, 4, GEN[g]);
         btn(AB_PLAY);
         run_ms(2000);
-        snprintf(where, sizeof where, "T5 %s", AE_GEN_NAME[g]);
-        alone(NTRK, where);
-        and_select(NTRK);
+        snprintf(where, sizeof where, "T5 %s", NAME[g]);
+        alone(4, where);
+        and_select(4);
         and_ui.page = AB_GEN;
         and_ui.hot_ms = 0;
         web_screen();
-        snprintf(where, sizeof where, "t5_%s", AE_GEN_NAME[g]);
-        for (uint32_t k = 0; where[k]; k++)
-            if (where[k] >= 'A' && where[k] <= 'Z') where[k] = (char)(where[k] + 32);
+        snprintf(where, sizeof where, "t5_%s", NAME[g]);
         dump(where);
         and_select(0);
         btn(AB_STOP);
         run_ms(50);
     }
-    ae_set(AE_GEN, 0, AE_OFF);
-    CHECK(!and_pic_gen(NTRK), "T5 OFF: no picture (the overview instead)");
+    pid_set(AND_PID_MODE, 4, TESS_ENG_TURING);
 
     /* the pages' own: ENV on AMP (an engine with the shared envelope; FM6 has none), LFO, PIECE */
     and_select(0);

@@ -43,7 +43,7 @@ web/andamento/build.sh                                  # the browser prototype 
 web/andamento/build.sh --headers                        # only the generated headers (the host tests need them)
 ```
 
-Host tests: `tests/and_tests.sh` (about a minute): Andamento's own jobs (`oled_render and_keys and_home and_ext
+Host tests: `tests/and_tests.sh` (about a minute): Andamento's own jobs (`oled_render and_keys and_home and_out
 and_ui and_pics and_master and_texture and_macro and_project
 and_voice`) and the core's tests at 48 kHz, among them the golden renders against
 `tests/golden_48k.txt`. No FM-1 package or JieLi SDK. `tests/and_tests.sh --list` names the jobs; name some to run only

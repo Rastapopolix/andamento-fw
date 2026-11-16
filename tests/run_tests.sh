@@ -42,10 +42,9 @@
 # ANDAMENTO HOME (tests/and_home_test.c): Andamento's home screen (platform/andamento/and_home.c) in the same build:
 #                   it starts there and NO comes back, the encoders as the tracks' ENERGY DEPTH, the 8 lanes (5..8
 #                   the external tracks'), ENERGY's history FREE and over a planned piece, a rest; its frames as PNGs in build/oled.
-# ANDAMENTO EXT (tests/and_ext_test.c): Andamento's tracks 5..8 (platform/andamento/and_ext.c) in the same build: their
-#                   generators' notes out on MIDI channels 5..8 on the grid, one at a time, in the scale; the CV and gate;
-#                   STOP, PLAY again from the SEED, MUTE, CHAN OFF, ENERGY's DEPTH, a key, their pages, and tracks 1..4
-#                   bit for bit the same with them playing; its frames as PNGs in build/oled.
+# ANDAMENTO OUT (tests/and_out_test.c): Andamento's 8 tracks and their outputs (platform/andamento/and_out.c) in the
+#                   same build: SOUND, MIDI CH, CV / gate, STOP, MUTE, a key, MIX's OUT, and tracks 1..4 bit for bit the
+#                   same with 5..8 playing; its frames as PNGs in build/oled.
 # ANDAMENTO SCREENS (tests/and_ui_test.c): Andamento's two screens (platform/andamento/and_ui.c) in the same build:
 #                   the page screen (header, picture, tabs) and the dial screen on every page of an internal and an
 #                   external track and on HOME; the dial screen's layout lint (no value cut, each in its cell, a clear
@@ -227,16 +226,16 @@ qmap() {
         tests/target_budget.txt) QSEL="$QSEL target_budget" ;;
         tests/ui_render.*) QSEL="$QSEL ui_renders" ;;
         tests/oled_render.*) QSEL="$QSEL oled_render" ;;
-        platform/andamento/*) QSEL="$QSEL oled_render and_keys and_home and_ext and_ui and_pics and_master and_texture and_project" ;;
+        platform/andamento/*) QSEL="$QSEL oled_render and_keys and_home and_out and_ui and_pics and_master and_texture and_project" ;;
         tests/and_keys_test.c) QSEL="$QSEL and_keys" ;;
         tests/and_home_test.c) QSEL="$QSEL and_home" ;;
-        tests/and_ext_test.c) QSEL="$QSEL and_ext" ;;
+        tests/and_out_test.c) QSEL="$QSEL and_out" ;;
         tests/and_ui_test.c) QSEL="$QSEL and_ui" ;;
         tests/and_pics_test.c) QSEL="$QSEL and_pics" ;;
         tests/and_master_test.c) QSEL="$QSEL and_master" ;;
         tests/and_texture_test.c) QSEL="$QSEL and_texture" ;;
         tests/and_project_test.c | tests/fixtures/andp_*) QSEL="$QSEL and_project" ;;
-        web/andamento/*) QSEL="$QSEL and_keys and_home and_ext and_ui and_pics and_master and_texture and_project" ;;
+        web/andamento/*) QSEL="$QSEL and_keys and_home and_out and_ui and_pics and_master and_texture and_project" ;;
         firmware/src/mo_font.h) QSEL="$QSEL $G_UI oled_render" ;;
         tests/demo_steps.h | tests/demo_projects.c) QSEL="$QSEL demo_projects" ;;
         tests/phys_ref.cpp | tests/phys_fixed.c) QSEL="$QSEL phys_ref" ;;
@@ -458,13 +457,13 @@ and_home() {                                      # (the headers as and_keys: we
         "$OUT/and_home" build/oled
     [ $PIL = 1 ] && { python3 tests/oled_render.py build/oled || fail "tests/oled_render.py"; }
 }
-and_ext() {                                       # (the headers as and_keys: web/andamento/build.sh --headers)
+and_out() {                                       # (the headers as and_keys: web/andamento/build.sh --headers)
     sh web/andamento/build.sh --headers > /dev/null || { fail "web/andamento/build.sh --headers"; return; }
-    build and_ext and_ext_test -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 \
+    build and_out and_out_test -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 \
         -DMELODEE_PHYS=1 -Ibuild/andamento/gen -Ifirmware/src -Itests || return
     mkdir -p build/oled/ppm
-    step "Andamento tracks 5..8 (platform/andamento/and_ext.c): MIDI 5..8, CV / gate, STOP, MUTE, ENERGY, keys, pages, 1..4 unchanged" \
-        "$OUT/and_ext" build/oled
+    step "Andamento outputs (platform/andamento/and_out.c): 8 tracks, SOUND, MIDI CH, CV / gate, STOP, MUTE, keys, MIX OUT" \
+        "$OUT/and_out" build/oled
     [ $PIL = 1 ] && { python3 tests/oled_render.py build/oled || fail "tests/oled_render.py"; }
 }
 and_ui() {                                        # (the headers as and_keys: web/andamento/build.sh --headers)
@@ -630,7 +629,7 @@ if core && [ $TABLES = 1 ]; then
     job oled_render
     job and_keys
     job and_home
-    job and_ext
+    job and_out
     job and_ui
     job and_pics
     job and_master

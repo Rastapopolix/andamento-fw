@@ -23,6 +23,8 @@
  *          SEND 1   SEND FX 1 and 2 (the song's)
  *          SEND 2   SEND FX 3, FX RETURN and FX MODE
  *          MASTER, TEXTURE  Andamento's own (and_master.c, and_texture.c)
+ *   MIX    MIX      LEVEL, PAN, MUTE, the tempo, SWING, the scale
+ *          OUT      where the track's notes go: SOUND, MIDI, a CV / gate pair (and_out.c)
  *
  * A cell is a pid. Most of PAGES[]' columns are one already (a track's P_*, the song's G_*); a column of FM6's or
  * ORACLE's pages is a view of the engine's patch, so it is AP_PID + page * 4 + column and goes through page_desc and
@@ -412,6 +414,10 @@ static const uint16_t AND_FIXED_PIECE[2][8] = {
     {0x272, 0x273, 0x274, 0x27c, 0x27e, 0x26d, 0x283, 0x279},   /* CHAIN, ENTRIES, DEPTH, COUNT, FOLLOW */
 };
 static const uint16_t AND_FIXED_MIX[8] = {0x000, 0x027, 0x028, 0x100, 0x101, 0x019, 0x01a, 0x01c};
+/* MIX's OUT: where the track's notes go (and_out.c): its SOUND, MIDI OUT's channel, TRANSPOSE and DRUM MAP; its CV
+ * pair and ENERGY DEPTH, then the pair's CV and gate as the jacks have them (and_draw_dials) */
+#define AND_MIX_OUT 1u
+static const uint16_t AND_FIXED_OUT[8] = {0x271, 0x263, 0x26f, 0x299, AO_PID + AO_CV, 0x26d, PID_NONE, PID_NONE};
 
 /* page p's sub-pages for the selected (internal) track, into and_subs */
 static void and_gen_cells(uint16_t *c);
@@ -434,5 +440,6 @@ static void and_map(uint32_t p)
         and_sub_add("CHAIN", "CHAN", AND_FIXED_PIECE[1], AND_FIXED_PIECE[1] + 4);
     } else if (p == AB_MIX) {
         and_sub_add("MIX", "MIX", AND_FIXED_MIX, AND_FIXED_MIX + 4);
+        and_sub_rows("OUT", "OUT", AND_FIXED_OUT, AND_FIXED_OUT + 4, 1);
     }
 }

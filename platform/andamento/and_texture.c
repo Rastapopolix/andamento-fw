@@ -20,7 +20,7 @@
  *             and_master_block's output untouched (and_texture_block returns at once: nothing captured either,
  *             so turning MIX up starts the bed from silence, filling over the next couple of seconds)
  *
- * Settings (AT_PID + AT_*) are a 3rd pid namespace, after and_ext.c's AE_PID and and_master.c's AM_PID, and_ui.c's
+ * Settings (AT_PID + AT_*) are a 3rd pid namespace, after the retired AE_PID (and_project.c) and and_master.c's AM_PID, and_ui.c's
  * FX page's 3rd sub-page (press FX twice more). Not saved in a project yet, as the others aren't either.
  * Included by and_ui.c after and_master.c (it reuses am_clip16); and_texture_block() is called directly by the
  * platform (web/andamento/sim.c, later platform/daisy), right after and_master_block(). */
@@ -31,13 +31,14 @@
 
 enum { AT_SIZE, AT_DENS, AT_POS, AT_SPREAD, AT_PITCH, AT_FREEZE, AT_MIX, AT_NPRM };
 
+static const char *const AT_ONOFF[2] = {"OFF", "ON"};
 static const param_desc_t AT_DESC[AT_NPRM] = {
     [AT_SIZE] = {"SIZE", F_INT, 10, 500, 80, 0, "ms"},
     [AT_DENS] = {"DENS", F_INT, 1, 100, 20, 0, "/s"},
     [AT_POS] = {"POS", F_PCT, 0, 100, 30, 0, 0},            /* how far back of the write head grains start */
     [AT_SPREAD] = {"SPREAD", F_PCT, 0, 100, 50, 0, 0},      /* jitters POS, the grain spacing and the pan */
     [AT_PITCH] = {"PITCH", F_SEMI, -24, 24, 0, 0, 0},
-    [AT_FREEZE] = {"FREEZE", F_ENUM, 0, 1, 0, AE_ONOFF, 0}, /* and_ext.c's ON / OFF names */
+    [AT_FREEZE] = {"FREEZE", F_ENUM, 0, 1, 0, AT_ONOFF, 0},
     [AT_MIX] = {"MIX", F_PCT, 0, 100, 0, 0, 0},             /* 0: off, bit-identical (the default) */
 };
 static const param_desc_t AT_NONE_DESC = {"-", F_INT, 0, 0, 0, 0, 0};
@@ -72,7 +73,7 @@ static void at_set(uint32_t x, int32_t v)
     if (x < AT_NPRM)
         and_texture.v[x] = (int16_t)clamp(v, AT_DESC[x].min, AT_DESC[x].max);
 }
-/* power-on (as and_ext_init): the capture, every grain and the stream reset, settings back to default, so a
+/* power-on (as and_out_init): the capture, every grain and the stream reset, settings back to default, so a
  * run from here is the same every time */
 static void and_texture_init(void)
 {

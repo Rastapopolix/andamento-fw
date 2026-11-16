@@ -35,7 +35,7 @@ static void web_power_on(void)
     proj_fetch(1);
     project_load(0);
     song.master_q12 = 2048;
-    and_ext_init();                              /* tracks 5..8 (and_ext.c) */
+    and_out_init();                              /* the tracks' outputs, tracks 5..8's start (and_out.c) */
     and_texture_init();                          /* the texture engine (and_texture.c) */
     web_booted = 1;
 }
@@ -62,7 +62,6 @@ static void web_ms(void)
         mix_block(o, CTL);
         and_master_block(o, CTL);                /* (the master bus: tilt EQ then compressor, and_master.c) */
         and_texture_block(o, CTL);                /* (the texture engine: a granular cloud, and_texture.c) */
-        and_ext_block();                         /* (tracks 5..8: their steps on the clock mix_block moved on) */
         for (k = 0; k < CTL; k++) {
             uint32_t i = (ring_w++ % RING) * 2u;
             ring[i] = (float)o[2u * k] * (1.0f / 32768.0f);
@@ -112,13 +111,14 @@ EXPORT uint8_t *web_dials(void) { return &and_fbs[AND_SCR_DIAL][0][0]; }
 EXPORT uint32_t web_led_buttons(void) { return and_led_buttons(); }
 /* the keys' lights: 16 x RGB (bottom row first), 0..255 a channel */
 EXPORT const uint8_t *web_led_keys(void) { return and_led_keys(); }
-/* tracks 5..8's MIDI since the last call: up to 64 messages of 3 bytes at web_midi_buf(), web_midi_take() of them */
+/* the tracks' MIDI since the last call (and_out.c): up to 64 messages of 3 bytes at web_midi_buf(), web_midi_take() of
+ * them */
 static uint8_t web_midi[64 * 3];
 EXPORT uint8_t *web_midi_buf(void) { return web_midi; }
-EXPORT uint32_t web_midi_take(void) { return and_ext_midi_take(web_midi, 64); }
-/* the jack strip: pair i's (0..3: tracks 5..8) CV in mV, and its gate */
-EXPORT int32_t web_cv(uint32_t i) { return and_ext_cv(i); }
-EXPORT uint32_t web_gate(uint32_t i) { return (uint32_t)and_ext_gate(i); }
+EXPORT uint32_t web_midi_take(void) { return and_out_midi_take(web_midi, 64); }
+/* the jack strip: pair i's (0..3) CV in mV, and its gate (each track's CV pair: MIX's OUT) */
+EXPORT int32_t web_cv(uint32_t i) { return and_out_cv(i); }
+EXPORT uint32_t web_gate(uint32_t i) { return (uint32_t)and_out_gate(i); }
 EXPORT uint32_t web_sample_rate(void) { return FS; }
 EXPORT uint32_t web_now_ms(void) { return fm1_ms; }
 EXPORT uint32_t web_playing(void) { return song.playing; }
@@ -126,6 +126,7 @@ EXPORT uint32_t web_playing(void) { return song.playing; }
 EXPORT void web_demo(uint32_t slot)
 {
     transport_req = 2;
-    project_load(slot & 1u);
+    project_load(slot & 1u);                     /* (a Tessera project: tracks 1..4; 5..8 back to their start) */
+    and_out_defaults();
     transport_req = 1;
 }
