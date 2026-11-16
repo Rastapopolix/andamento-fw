@@ -3816,7 +3816,7 @@ static int test_step_sheets(void)
     bad += check("..OCT+ on the note: its sheet (Length, Velocity, Chance, Condition, .., Delete note)", pop.on == POP_SHEET &&
                  pop.rows == SHEET_NOTE && !memcmp(pop.title, "Note ", 5));
     turn(EN_K2, 1);
-    bad += check("..KNOB 2 on Length snaps to 1.25 steps", notes_selected(t)<RECORD_MAX && recording[notes_selected(t)].duration*(1u<<(recording[notes_selected(t)].owner>>5))==5u*RECORD_UNIT/4u && pop.on == POP_SHEET);
+    bad += check("..KNOB 2 on Length snaps to 1.25 steps", notes_selected(t)<RECORD_MAX && recording[notes_selected(t)].duration*(1u<<(recording[notes_selected(t)].length >> 1))==5u*RECORD_UNIT/4u && pop.on == POP_SHEET);
     turn(EN_K1, 1); turn(EN_K1, 1); turn(EN_K2, -10);
     bad += check("..Chance: 90 %", step_chance(&t->step[4]) == 90u);
     turn(EN_K1, 1);
@@ -7149,7 +7149,7 @@ static uint32_t cap_events(const track_t *t)
 {
     uint32_t i, n = 0;
     for (i = 0; i < RECORD_MAX; i++)
-        if (recording[i].vel && (recording[i].owner & 31u) == recording_owner(t) && recording_present(&recording[i])) n++;
+        if (recording[i].vel && (recording[i].owner & 63u) == recording_owner(t) && recording_present(&recording[i])) n++;
     return n;
 }
 static int test_capture(void)

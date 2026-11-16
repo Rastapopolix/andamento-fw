@@ -230,7 +230,7 @@ static void rec_put(track_t *t, uint32_t actual, uint32_t note, uint32_t bits, u
 static int rec_has(const track_t *t, uint32_t note, uint32_t step)   /* (step: the byte as stored) */
 {
     for (uint32_t i = 0; i < RECORD_MAX; i++)
-        if (recording[i].vel && (recording[i].owner & 31u) == recording_owner(t) && recording[i].note == note &&
+        if (recording[i].vel && (recording[i].owner & 63u) == recording_owner(t) && recording[i].note == note &&
             recording[i].step == step) return 1;
     return 0;
 }

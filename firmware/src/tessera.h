@@ -6,7 +6,8 @@
 #include <stdint.h>
 #include "gen.h"
 
-#define TESSERA_TRACKS 4
+#define TESSERA_TRACKS 8          /* Andamento's 8 (2026-11-16; NTRK, core.h) */
+#define TESS_PK_TRACKS 4u         /* the tracks a Tessera block (a .tsp's, the FM-1's) packs: 1..4; 5..8 are kept */
 
 /* Engine types per track */
 enum {
@@ -355,7 +356,7 @@ int energy_resting(void);                           /* 1 while the notes rest */
 const char *tessera_cond_name(uint32_t cond);
 uint32_t tessera_form_get(uint32_t tr, uint8_t seq[4], uint32_t *pos);   /* returns the form's length, 0 = OFF */
 const char *tessera_form_name(uint32_t form);
-#define TESSERA_PK_BYTES 894u                       /* the saved state, version 21 (tessera.c: TESS_PK_TRACK x TESSERA_TRACKS,
+#define TESSERA_PK_BYTES 894u                       /* the saved state, version 21 (tessera.c: TESS_PK_TRACK x TESS_PK_TRACKS,
                                                      * then the project's TESS_PK_TAIL) */
 #define TESSERA_PK_BYTES_V20 762u                   /* version 20 (before ANSWER's extra 8 notes and its CHORD switch) */
 #define TESSERA_PK_BYTES_V19 730u                   /* version 19 (before ANSWER's HOLD) */

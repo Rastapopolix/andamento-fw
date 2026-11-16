@@ -546,9 +546,10 @@ static int chk_cap_mode_budget(char *msg, uint32_t n)
 {
     static const uint8_t MODE[3] = {V_MONO, V_LEGATO, V_UNISON};
     uint32_t round, p, i, bad = 0, worst = 0;
+    const uint32_t np = 4u;                         /* (four parts, as on the FM-1: Andamento's 5..8 stay silent) */
     for (round = 0; round < NELEM(MODE); round++) {
         host_tracks_init();
-        for (p = 0; p < NPART; p++) {
+        for (p = 0; p < np; p++) {
             memset(trk[p].v, 0, sizeof trk[p].v);
             host_preset(&trk[p], HOST_SYNTH, HOST_PLAIN);
             trk[p].p[P_VOICE] = p ? V_MONO : V_POLY;
@@ -566,7 +567,7 @@ static int chk_cap_mode_budget(char *msg, uint32_t n)
             for (i = 1; i < trk_nvoice(&trk[0]); i++)
                 voice_kill(&trk[0].v[i]);
         }
-        for (p = 1; p < NPART; p++) {
+        for (p = 1; p < np; p++) {
             trk_note_on(&trk[p], 70u + p * 3u, 100);
             i = voices_busy();
             worst = i > worst ? i : worst;
@@ -579,9 +580,9 @@ static int chk_cap_mode_budget(char *msg, uint32_t n)
         bad += i > NVOICE || !trk[0].v[0].gate;
         blk();
         bad += voices_busy() > NVOICE || !trk[0].v[0].gate;
-        for (p = 1; p < NPART; p++)
+        for (p = 1; p < np; p++)
             bad += !trk[p].v[0].gate;
-        for (p = 0; p < NPART; p++)
+        for (p = 0; p < np; p++)
             trk_all_off(&trk[p]);
         for (i = 0; i < 4u * FS / CTL && !parts_free(); i++)
             blk();

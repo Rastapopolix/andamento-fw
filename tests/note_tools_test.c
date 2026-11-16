@@ -14,7 +14,7 @@ static void select_range(uint32_t start,int32_t delta)
 {
     cursor_set((int32_t)start);btn_down(B_OCTUP);frame();frames(700);turn(EN_K1,delta);btn_up(B_OCTUP);frame();
 }
-static uint32_t duration(uint32_t i){return recording[i].duration*(1u<<(recording[i].owner>>5));}
+static uint32_t duration(uint32_t i){return recording[i].duration*(1u<<(recording[i].length >> 1));}
 int main(void)
 {
     int bad=0;setup();manual(2,60,1);manual(5,72,1);cursor_set(2);frame();

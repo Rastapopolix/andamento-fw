@@ -168,7 +168,7 @@ static int slow_precision(void)
     uint32_t period=seq_div_samples(9), at=period*63u+12345u;
     seq_advance(at);input_on(t,60,100);seq_advance(1234);input_off(t,60);
     uint32_t captured=recording_on(t,&recording[0],period);
-    uint32_t gate=(uint32_t)(((uint64_t)recording[0].duration<<(recording[0].owner>>5))*period/RECORD_UNIT);
+    uint32_t gate=(uint32_t)(((uint64_t)recording[0].duration<<(recording[0].length >> 1))*period/RECORD_UNIT);
     int bad=check("slow divisions retain onset/release precision even at the end of a 64-step pattern",
                   captured+3u>=at && captured<=at+3u && gate+6u>=1234u && gate<=1234u);
     raw_replay();seq_advance(captured-1);int exact=!gate_note(t,60);seq_advance(1);exact &= gate_note(t,60);
@@ -287,7 +287,7 @@ static int pattern_passes(void)
         bad += check("the end boundary starts the next pass: REC stays on (overdub), playback and live monitoring go on",
             song.playing && song.rec == 1 && rec_on(t) && !song.rec_wait && !t->seq_idx && !t->seq_pos && gate_note(t, 67));
         input_off(t, 67);
-        uint32_t gate = (uint32_t)(((uint64_t)recording[1].duration << (recording[1].owner >> 5)) * period / RECORD_UNIT);
+        uint32_t gate = (uint32_t)(((uint64_t)recording[1].duration << (recording[1].length >> 1)) * period / RECORD_UNIT);
         input_on(t, 72, 100); seq_advance(50); input_off(t, 72);
         bad += check("the second pass overdubs: its key joins the take, a note held over the boundary sealed where it was let go",
             recording[2].note == 72 && recording[2].vel == 100 && !(recording_flags[1] & 1u) && gate >= 998u && gate <= 1001u);
@@ -495,7 +495,7 @@ static int take_quantization(void)
         seq_advance(101); input_off(t, 60); seq_advance(299); input_off(t, 64);
         uint32_t at = a + b / 3u;
         seq_advance(at - (a / 3u + 400u)); input_on(t, 67, 115);
-        recording[2].pitch = -5; recording[2].length = 1;
+        recording[2].pitch = -5; recording[2].length |= 1u;
         seq_advance(200); input_off(t, 67);
         recorded_note_t raw[3]; memcpy(raw, recording, sizeof raw);
         uint32_t target[3];

@@ -183,9 +183,9 @@ int main(int argc, char **argv)
         pid_set(e->pid, 1, hi);
         if (pid_get(e->pid, 1) != hi) { reach = 0; printf("    max: 0x%03x %s %d\n", e->pid, e->name, (int)pid_get(e->pid, 1)); }
         pid_set(e->pid, 1, hi + 1000);
-        if (pid_get(e->pid, 1) != hi) clamps = 0;
+        if (pid_get(e->pid, 1) != hi) { clamps = 0; printf("    hi: 0x%03x %s %d\n", e->pid, e->name, (int)pid_get(e->pid, 1)); }
         pid_set(e->pid, 1, lo - 1000);
-        if (pid_get(e->pid, 1) != lo) clamps = 0;
+        if (pid_get(e->pid, 1) != lo) { clamps = 0; printf("    lo: 0x%03x %s %d\n", e->pid, e->name, (int)pid_get(e->pid, 1)); }
         pid_set(e->pid, 1, d->def);
     }
     check("set then get: every settable value reaches both ends of its range", reach);
