@@ -43,18 +43,15 @@ web/andamento/build.sh                                  # the browser prototype 
 web/andamento/build.sh --headers                        # only the generated headers (the host tests need them)
 ```
 
-Host tests: `tests/run_tests.sh` is still Tessera's runner and wants an FM-1 package (`build/tessera.fwsc`) and
-JieLi SDK for its FM-1 jobs. Until it is trimmed, run Andamento's jobs with a placeholder:
+Host tests: `tests/and_tests.sh` (about a minute): Andamento's own jobs (`oled_render and_keys and_home and_ext
+and_ui and_pics and_master and_texture and_macro and_project`) and the core's tests at 48 kHz, among them the golden renders against
+`tests/golden_48k.txt`. No FM-1 package or JieLi SDK. `tests/and_tests.sh --list` names the jobs; name some to run only
+those; `GOLDEN_UPDATE=1 tests/and_tests.sh regress` only after an intended change of the sound (review the diff).
+Its header lists the core tests not yet ported to 48 kHz. `tests/run_tests.sh` is Tessera's runner (FM-1 jobs) and
+goes with the FM-1 trim.
 
-```
-python3 -c "import sys; sys.path.insert(0, 'tools'); import build; build.generate()"
-python3 tools/gen_909_tables.py build/gen/x0x_drum_tables.h
-touch build/tessera.fwsc
-QUICK_BASE=<base commit> sh tests/run_tests.sh --quick   # picks the jobs for the files changed
-```
-
-Andamento's jobs: `oled_render and_keys and_home and_ext and_ui and_pics and_master and_texture and_project`. CI builds
-`platform/daisy` on every pull request and push to `main` (`.github/workflows/daisy-build.yml`).
+CI on every pull request and push to `main`: `platform/daisy` builds (`.github/workflows/daisy-build.yml`) and
+`tests/and_tests.sh` passes (`.github/workflows/host-tests.yml`, with the screens' PNGs as an artifact).
 
 ## Hardware
 
