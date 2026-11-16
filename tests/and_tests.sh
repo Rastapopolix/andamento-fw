@@ -17,6 +17,7 @@
 #   and_pics      the generators' pictures on GEN            and_master   the master bus (tilt EQ, compressor)
 #   and_texture   the texture engine                     and_macro    the MACRO engine (Plaits, C++: needs c++)
 #   and_project   the project file: round trip, unknowns skipped, refusals, the golden tests/fixtures/andp_v1.and
+#   and_voice     the shared voice stage (firmware/src/vstage.c): filter types, CUT, RES, ENV, KEY, DRIVE, VEL
 #   The screens' PNGs go to build/oled (tests/oled_render.py).
 # CORE at 48 kHz (firmware/src with the tables made at MELODEE_FS=48000, as platform/daisy/Makefile makes them):
 #   regress       golden renders (every engine x preset, voice modes, FX, a 4-track mix) against tests/golden_48k.txt,
@@ -41,7 +42,7 @@ PARALLEL=${PARALLEL:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
 QUIET=1
 PIL=0; python3 -c "import PIL" 2>/dev/null && PIL=1
 
-JOBS="oled_render and_keys and_home and_ext and_ui and_pics and_master and_texture and_macro and_project
+JOBS="oled_render and_keys and_home and_ext and_ui and_pics and_master and_texture and_macro and_project and_voice
     regress fs_test gen_test chain_test entries_test planner_test split_test recipes_test
     pid_test cord_test help_pack_test tables_test mod_test mod_spread_test fm6_test drum_test chord_test"
 WANT=
@@ -98,6 +99,8 @@ screen_of() {                                     # an and_*_test.c whose binary
     echo "== $1"
     build "$J" "$J0" -O1 $AND && { "$OUT/$J" build/oled || fail "$1"; } && pngs
 }
+job_and_voice() { echo "== Andamento voice stage (vstage.c): FILTER LP LP4 BP HP, CUT, RES, ENV, KEY, DRIVE, VEL, every engine, the project file"
+    build and_voice and_voice_test -O1 $AND && { "$OUT/and_voice" || fail "and_voice"; }; }
 job_and_master() { echo "== Andamento master bus: MIX 0 bit-identical, bypass, compressor, release, makeup, tilt, determinism"
     build and_master and_master_test -O1 $AND && { "$OUT/and_master" || fail "and_master"; }; }
 job_and_texture() { echo "== Andamento texture engine: MIX 0 bit-identical, capture, FREEZE, DENS, AT_GRAINS bound, determinism"
