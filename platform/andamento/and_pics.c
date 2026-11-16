@@ -734,21 +734,6 @@ static void pc_pic_dxenv(uint32_t tr, int pitch)
 enum { PC_FLT_LP, PC_FLT_BP, PC_FLT_HP, PC_FLT_NOTCH };
 /* track tr's engine's filter type: the knob that sets it (an enum named LP, BP, HP, NOT(CH): TRIO's MODE), else a
  * low-pass (ORACLE's) */
-static uint32_t pc_flt_type(uint32_t tr)
-{
-    const track_t *t = &trk[tr % NTRK];
-    uint32_t i;
-    for (i = 0; i < 8u; i++) {
-        const param_desc_t *d = track_desc(t, P_E0 + i);
-        int32_t v = t->p[P_E0 + i];
-        const char *n;
-        if (!d || d->fmt != F_ENUM || !d->names || !str_eq(d->names[0], "LP") || v < d->min || v > d->max)
-            continue;
-        n = d->names[v - d->min];
-        return str_eq(n, "BP") ? PC_FLT_BP : str_eq(n, "HP") ? PC_FLT_HP : str_prefix(n, "NOT") ? PC_FLT_NOTCH : PC_FLT_LP;
-    }
-    return PC_FLT_LP;
-}
 /* the response's height over the flat level (1/16 px) d px from the cutoff: the resonance's peak (peak high, w wide in
  * px^2), then the slope s (1/16 px a px; a band-pass half of it on each side); a notch dips deep, narrower as the
  * resonance rises */
@@ -921,9 +906,11 @@ static int and_pic_page(uint32_t p, uint32_t sub, uint32_t tr)
         pc_pic_env(v[0], v[1], v[2], v[3]);
         return 1;
     }
-    if (p == AB_SOUND && !strcmp(and_subs[sub].tab, "FILT")) {   /* the engine's cutoff and RES, by the FM-1's rule */
-        int32_t cut = -1, res = 0;                                     /* (ui_pages.c pv_pic) */
-        uint32_t k;
+    if (p == AB_SOUND && !strcmp(and_subs[sub].tab, "FILT")) {   /* the shared filter's CUT and RES, by the FM-1's */
+        int32_t cut = -1, res = 0;                                     /* rule (ui_pages.c pv_pic) */
+        uint32_t k, type = (uint32_t)vs_get(tr, VS_TYPE);
+        if (type == VS_OFF)
+            return 0;                            /* (no filter: the track overview) */
         for (k = 0; k < 8u; k++) {
             uint16_t c = and_subs[sub].c[k];
             const param_desc_t *d = c != PID_NONE ? and_desc(c, tr) : 0;
@@ -937,8 +924,8 @@ static int and_pic_page(uint32_t p, uint32_t sub, uint32_t tr)
                 res = v;
         }
         if (cut < 0)
-            return 0;                            /* (no filter of its own: PHYS, DRUM) */
-        pc_pic_filter(cut, res, pc_flt_type(tr));
+            return 0;
+        pc_pic_filter(cut, res, type == VS_BP ? PC_FLT_BP : type == VS_HP ? PC_FLT_HP : PC_FLT_LP);
         return 1;
     }
     if (p == AB_SOUND && and_is_ap(and_subs[sub].c[0])) {   /* FM6's EG RATE / LVL, PITCH EG / LV */
