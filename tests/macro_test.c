@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * Copyright (C) 2026 Theo Dainis (melodee-tess) */
 /* MACRO (eng_macro.c, Plaits' synthesis): built with -DMELODEE_PLAITS=1 and linked with Plaits compiled for this
- * computer (run_tests.sh and_macro, c++), at Andamento's 48 kHz. Every model plays, finite and within full scale; a
+ * computer (tests/and_tests.sh and_macro, c++), at Andamento's 48 kHz. Every model plays, finite and within full scale; a
  * held VA note at its pitch; HIT ON strikes and decays, OFF holds; MODEL, HARM .. AUX reach the sound; its memory from
  * the audio arena; the cost against FM6's on this computer (a report; against SID's in Tessera, SID is gone). */
 #if !MELODEE_PLAITS

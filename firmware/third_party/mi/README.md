@@ -9,6 +9,9 @@ Taken from https://github.com/pichenettes/eurorack at f4cfa76 (2026-10-12) and
 https://github.com/pichenettes/stmlib at d18def8 (2023-09-03). The Python resource generators, the hardware
 drivers, the UI and the bootloader are left out.
 
+Andamento (2026-11-16): back from Tessera's history (removed there in 4479914), unchanged; built at 48 kHz for the
+Daisy, the browser prototype and the host test (`platform/daisy/plaits_sources.sh` lists the files and flags).
+
 Changes (each marked `melodee-tess` in the code):
 - `plaits/dsp/dsp.h`: the sample rate is `PLAITS_SAMPLE_RATE` (the FM-1's 44.1 kHz), 48 kHz by default.
 - `plaits/dsp/fx/diffuser.h`: its LFO by that rate.

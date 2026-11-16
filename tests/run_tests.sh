@@ -60,10 +60,6 @@
 #                   an empty capture barely changes a tone, a filled one keeps sounding after the dry input stops,
 #                   FREEZE holds the capture still, a busier DENS is not quieter, AT_GRAINS (8) is never exceeded,
 #                   and determinism.
-# ANDAMENTO MACRO (tests/macro_test.c, job and_macro): the MACRO engine (firmware/src/eng_macro.c, Plaits' synthesis in
-#                   firmware/third_party/mi) at 48 kHz, Plaits built with c++ as platform/daisy builds it: every model
-#                   plays, a held note at its pitch, HIT ON and OFF, each setting moves the sound, its arena memory,
-#                   no denormal tails, its cost against FM6's (a report).
 # UI (tests/ui_test.c): the UI sources against stub display / buttons / knobs: sound loads keep the steps and
 #                   the track's ARP / SCL / SLICER, the SEQ > PATTERNS loader and its REPLACE? dialog, the
 #                   one-step undo of both (EDIT held), REC on TRACKS / SEQ / ARP, STEP and ARP while recording,
@@ -234,8 +230,6 @@ qmap() {
         tests/and_pics_test.c) QSEL="$QSEL and_pics" ;;
         tests/and_master_test.c) QSEL="$QSEL and_master" ;;
         tests/and_texture_test.c) QSEL="$QSEL and_texture" ;;
-        firmware/src/eng_macro.c | firmware/src/macro_glue.* | firmware/third_party/mi/* | tests/macro_test.c | \
-            platform/daisy/plaits_sources.sh) QSEL="$QSEL and_macro" ;;
         web/andamento/*) QSEL="$QSEL and_keys and_home and_ext and_ui and_pics and_master and_texture" ;;
         firmware/src/mo_font.h) QSEL="$QSEL $G_UI oled_render" ;;
         tests/demo_steps.h | tests/demo_projects.c) QSEL="$QSEL demo_projects" ;;
@@ -499,24 +493,6 @@ and_texture() {                                   # (the headers as and_keys: we
     step "Andamento texture engine (platform/andamento/and_texture.c): MIX 0 bit-identical, capture, FREEZE, DENS, AT_GRAINS bound, determinism" \
         "$OUT/and_texture"
 }
-and_macro() {                                     # MACRO (eng_macro.c): Plaits' C++ for this computer at the Seed's 48 kHz
-    M=firmware/third_party/mi
-    if ! command -v c++ >/dev/null 2>&1; then echo "== MACRO: skipped (no c++)"; return; fi
-    sh web/andamento/build.sh --headers > /dev/null || { fail "web/andamento/build.sh --headers"; return; }
-    mkdir -p "$OUT/mi"
-    _objs=
-    for _f in $(sh platform/daisy/plaits_sources.sh); do
-        _o=$OUT/mi/$(echo "$_f" | tr / _).o
-        c++ -O2 -std=c++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics -w $(sh platform/daisy/plaits_sources.sh --flags) \
-            -c "$_f" -o "$_o" || { fail "compile $_f (MACRO)"; return 1; }
-        _objs="$_objs $_o"
-    done
-    $CC -O2 -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 -DMELODEE_PHYS=1 -DMELODEE_PLAITS=1 \
-        -Ibuild/andamento/gen -Ifirmware/src -Itests -c tests/macro_test.c -o "$OUT/macro_test.o" &&
-        c++ -o "$OUT/and_macro" "$OUT/macro_test.o" $_objs -lm || { fail "compile tests/macro_test.c (MACRO)"; return 1; }
-    step "Andamento MACRO (eng_macro.c, Plaits): every model plays, pitch at 48 kHz, HIT, every knob, arena memory, cost" \
-        "$OUT/and_macro"
-}
 dsp_tracks() {
     build hostsim hostsim -O2 $FW || return
     step "DSP render (FM6 INIT VOICE)" "$OUT/hostsim" 12 24 1 "$OUT/render.wav"
@@ -651,7 +627,6 @@ if core && [ $TABLES = 1 ]; then
     job and_pics
     job and_master
     job and_texture
-    job and_macro
     t "boot audio: codec waits for settled silent DMA and shuts down before I2S" audio_boot_test -w
     t "audio: overload protection, bounded fades and DMA diagnostics" audio_test $FW
     t "audio: silent bench keeps synthesis running and silences physical output" audio_silent_test:audio_test \
