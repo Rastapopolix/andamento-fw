@@ -228,7 +228,7 @@ void tessera_init(void)
         tessera.poly[i].pos = 3;
         tessera.quad[i].prob = 100;                     /* 9. Quad: forward, every cell, no LINK, three octaves; */
         tessera.quad[i].pos = 4;                        /* the columns still, each set to move every 4 steps */
-        tessera.qcol[i] = 3u << 2;
+        if (i < 4u) tessera.qcol[i] = 3u << 2;           /* (the grid's 4 columns, not a track's) */
         tessera.constel[i].y = 7;                       /* 10. Constellation: the middle of the sky, a star in two */
         tessera.constel[i].dens = 50;                   /* columns caught within 2 rows, the ship steered by hand */
         tessera.constel[i].size = 2;
@@ -2234,7 +2234,7 @@ uint32_t tessera_sig(uint32_t tr)
         for (uint32_t r = 0; r < TESSERA_TRACKS; r++) {
             const tessera_quad_t *a = &tessera.quad[r];
             h ^= a->pos * 31u + a->dir * 7919u + a->prob * 131u + a->link * 977u + tessera.mode[r] * 17u + a->range * 3u +
-                 tessera.qcol[r] * 104729u + tessera.qcol_sel * 61u;
+                 (r < 4u ? tessera.qcol[r] : 0u) * 104729u + tessera.qcol_sel * 61u;
             for (uint32_t i = 0; i < 4u; i++) h = (h ^ a->cell[i]) * 16777619u;
         }
         break; }
@@ -2572,7 +2572,7 @@ static uint8_t *tess_pack_track(uint8_t *o, uint32_t tr)
     *o++ = tessera.nl_mode[tr]; *o++ = tessera.nl_len[tr]; *o++ = tessera.nl_keys[tr];
     o = tess_put_v8(o, &tessera.constel[tr]);
     o = tess_put_v9(o, &tessera.series[tr]);
-    o = tess_put_v10(o, &tessera.quad[tr], tessera.qcol[tr]);
+    o = tess_put_v10(o, &tessera.quad[tr], tr < 4u ? tessera.qcol[tr] : 3u << 2);   /* (column tr: 4 of them) */
     o = tess_put_v11(o, &tessera.constel[tr]);
     o = tess_put_v12(o, &tessera.chord[tr]);
     o = tess_put_v13(o, &tessera.grids[tr], &tessera.chord[tr]);
@@ -2721,7 +2721,7 @@ static int tess_pk_track(const uint8_t *in, uint32_t tr, int apply)
     tessera.quad[tr].dir = qd[4]; tessera.quad[tr].prob = qd[5];
     tessera.quad[tr].link = (uint8_t)(qd[6] & ~(1u << tr));             /* (not itself) */
     tessera.quad[tr].range = qc[0];
-    tessera.qcol[tr] = qc[1];
+    if (tr < 4u) tessera.qcol[tr] = qc[1];
     tessera.nl_mode[tr] = nl[0]; tessera.nl_len[tr] = nl[1]; tessera.nl_keys[tr] = nl[2];
     tessera.constel[tr].y = cs[0]; tessera.constel[tr].dens = cs[1]; tessera.constel[tr].size = cs[2];
     tessera.constel[tr].autop = cs[3]; tessera.constel[tr].sky = (uint16_t)tess_get16(cs + 4);
