@@ -854,7 +854,7 @@ static int buses(void)
     check("...two gates: MAX is OR, MIN is AND, DIFF is XOR", v[0] == 0 && v[1] == 5 && v[2] == 5 && v[3] == 3);
     trk[0].lfo_val = trk[1].lfo_val = 0;
     cord_clear();
-    /* LAG: a fixed +100 % into A at LAG 10 ms rises over ~14 blocks (1378 a second), and falls as slowly */
+    /* LAG: a fixed +100 % into A at LAG 10 ms rises over ~14 blocks (FS / CTL a second: 1378 at 44.1 kHz, 1500 at 48), and falls as slowly */
     tessera_param_set(0, TX_BUSA_LAG, 1);
     c = C(CS_OFF, 0, CD_BUS_A, 0, 0, 100);
     cord_set(0, &c);
@@ -871,7 +871,7 @@ static int buses(void)
     tessera_param_set(0, TX_BUSA_LAG, 11);              /* 20 s */
     c.offset = 100;
     cord_set(0, &c);
-    v[0] = bus_after(1378);
+    v[0] = bus_after(FS / CTL);
     check("...LAG 20 s: a second rises 1/20", v[0] > 32767 / 20 - 64 && v[0] < 32767 / 20 + 64);
     tessera_param_set(0, TX_BUSA_LAG, 0);
     check("...LAG OFF: at once", bus_after(1) == 32767);
@@ -1241,7 +1241,7 @@ static int drift_and_defaults(void)
     uint32_t b, tr, apart = 0, saved = cord_blocks;
     double d;
     for (tr = 0; tr < NTRK; tr++) lo[tr] = 32767, hi[tr] = -32767, prev[tr] = cord_drift(tr);
-    for (b = 0; b < 1378u * 120u; b++) {            /* two minutes of blocks */
+    for (b = 0; b < FS / CTL * 120u; b++) {            /* two minutes of blocks */
         cord_tick();
         for (tr = 0; tr < NTRK; tr++) {
             int32_t x = cord_drift(tr);
@@ -1257,7 +1257,7 @@ static int drift_and_defaults(void)
     for (tr = 0, b = 1; tr < NTRK; tr++)
         if (hi[tr] - lo[tr] < 16384) b = 0;
     check("...it wanders: over two minutes each track's covers at least half its range", b);
-    check("...each track its own", apart > 1378u * 100u);
+    check("...each track its own", apart > FS / CTL * 100u);
     cord_blocks = saved;
 
     fresh_tracks();
