@@ -8,9 +8,11 @@
  *
  *   SOUND  S1..Sn   the engine's pages (EDIT 1 + EDIT 2 as the engine names them, then FM6's / ORACLE's / DRUM's
  *                   own), two at a time
- *          FILTER   the engine's filter (CUT, RES; ORACLE: its FILTER and FILT ENV), then ENV and LFO to the filter
- *                   and ENV TO SHAPE; none on an engine with envelopes of its own and no filter (FM6)
- *          AMP      the envelope (ORACLE: its AMP ENV; FM6: none, it has its own per operator), ENV TO PITCH,
+ *          FILTER   the shared voice stage's filter, the same on every engine (firmware/src/vstage.c: TYPE, CUT,
+ *                   RES, DRIVE), then ENV TO FILTER, KEY tracking, ENV TO PITCH and ENV TO SHAPE (FM6, with
+ *                   envelopes of its own: no ENV row). The engine's own filter (TRIO's CUT, ORACLE's FILTER and
+ *                   FILT ENV pages) stays on its synth pages
+ *          AMP      the envelope (ORACLE: its AMP ENV; FM6: none, it has its own per operator), VELocity,
  *                   SPREAD, PAN, LEVEL
  *          VOICE    ENGINE and PRESET, VOICE MODE and ALLOCATION, GLIDE, GLIDE MODE, PRIORITY, DETUNE
  *   MOD    LFO      LFO and LFO DEST
@@ -24,9 +26,9 @@
  *
  * A cell is a pid. Most of PAGES[]' columns are one already (a track's P_*, the song's G_*); a column of FM6's or
  * ORACLE's pages is a view of the engine's patch, so it is AP_PID + page * 4 + column and goes through page_desc and
- * the page's put-back as on the FM-1. ENGINE, PRESET and FM6's operator are AN_PID + AN_*. Not yet here: ORGANIC
- * (its knobs have no pids), MODS and MATRIX (full-screen pages, a later thread), the shared per-voice filter and amp
- * (new code in voice.c: andamento README). */
+ * the page's put-back as on the FM-1. ENGINE, PRESET and FM6's operator are AN_PID + AN_*; the shared voice stage
+ * is AV_PID + VS_* (and_ui.c). Not yet here: ORGANIC (its knobs have no pids), MODS and MATRIX (full-screen pages, a
+ * later thread). */
 
 #define AP_PID 0xD000u                           /* a column of an engine's own page: AP_PID + page * 4 + column */
 #define AN_PID 0xD800u                           /* Andamento's own: AN_PID + AN_* */
@@ -283,8 +285,8 @@ static uint32_t ap_pair_title(char *t, uint32_t a, uint32_t b)
 /* SOUND's synth pages: the engine's FAM_EDIT pages (the others are FILTER's, AMP's, VOICE's, MOD's), two at a time */
 static int ap_synth_page(uint32_t i)
 {
-    static const char *const NOT[] = {"VOICE", "VOICE 2", "VOICE 3", "FILTER", "FILT ENV", "AMP ENV", "LFO MOD",
-                                      "LFO ROUTE", "FM LFO", "FM LFO 2", 0};
+    static const char *const NOT[] = {"VOICE", "VOICE 2", "VOICE 3", "AMP ENV", "LFO MOD",
+                                      "LFO ROUTE", "FM LFO", "FM LFO 2", 0};   /* (ORACLE's FILTER, FILT ENV: S) */
     uint32_t k;
     uint16_t row[4];
     if (PAGES[i].fam != FAM_EDIT || !ap_page_ok(i))
@@ -332,23 +334,11 @@ static void and_map_sound(void)
                 pg[np++] = i;
         }
     }
-    /* FILTER: the engine's own (CUT, RES ..), then what moves it */
-    for (k = 0; k < 4u; k++)
-        a[k] = b[k] = PID_NONE;
-    if (oracle) {
-        ap_row(a, ap_find("FILTER"));
-        ap_row(b, ap_find("FILT ENV"));
-    } else {
-        uint32_t m = 0;
-        for (k = 0; k < 8u && m < 4u; k++) {
-            const char *l = e->edit[k].label;
-            if (l && (str_prefix(l, "CUT") || str_prefix(l, "RES") || str_prefix(l, "FLT") || str_prefix(l, "FILT")))
-                a[m++] = an_cell(PID_TRACK(P_E0 + k));
-        }
-        if (!ownenv)
-            b[0] = an_cell(PID_TRACK(P_ED_FLT)), b[1] = an_cell(PID_TRACK(P_LD_FLT)),
-            b[2] = an_cell(PID_TRACK(P_ED_SHP));
-    }
+    /* FILTER: the shared stage (vstage.c), then what moves it (LFO TO FILTER is on MOD's LFO DEST) */
+    a[0] = an_cell(AV_C(VS_TYPE)), a[1] = an_cell(AV_C(VS_CUT)), a[2] = an_cell(AV_C(VS_RES));
+    a[3] = an_cell(AV_C(VS_DRIVE));
+    b[0] = ownenv ? PID_NONE : an_cell(PID_TRACK(P_ED_FLT)), b[1] = an_cell(AV_C(VS_KEY));
+    b[2] = ownenv ? PID_NONE : an_cell(PID_TRACK(P_ED_PIT)), b[3] = ownenv ? PID_NONE : an_cell(PID_TRACK(P_ED_SHP));
     and_sub_add("FILTER", "FILT", a, b);
     /* AMP: the envelope, then where the voice sits */
     for (k = 0; k < 4u; k++)
@@ -357,7 +347,7 @@ static void and_map_sound(void)
         ap_row(a, ap_find("AMP ENV"));
     else if (!ownenv)
         ap_row(a, ap_find("ENV"));
-    b[0] = ownenv ? PID_NONE : an_cell(PID_TRACK(P_ED_PIT));
+    b[0] = ownenv ? PID_NONE : an_cell(AV_C(VS_VEL));   /* (FM6: its operators' own velocity) */
     b[1] = an_cell(PID_TRACK(P_SPRD)), b[2] = an_cell(PID_TRACK(P_PAN)), b[3] = an_cell(PID_TRACK(P_LEVEL));
     and_sub_rows("AMP", "AMP", a, b, 1);
     /* VOICE: the engine and its preset, then how its voices play */

@@ -10,7 +10,7 @@
  *   GEN       the page screen on GEN shows it (the 8 tracks' overview only elsewhere)
  *   QUAD      drawn for this screen (and_pic_quad): a clear row between its four rows, the track shown boxed
  * and the pages' own: ENV on AMP, FM6's EG RATE / LVL and PITCH EG / LV (a rate, a level, the operator changing it),
- * FILTER (TRIO: the cutoff moving it, each MODE its own shape; ORACLE; none on PHYS), LFO, PIECE */
+ * FILTER (the shared filter: none while OFF, the cutoff moving it, each TYPE its own shape, on any engine), LFO, PIECE */
 #define AND_LINT 1                               /* and_fb.c keeps the text drawn (and_lint.h) */
 #include "../web/andamento/sim.c"
 
@@ -234,43 +234,39 @@ int main(int argc, char **argv)
     }
     trio = eng_named("TRIO");
     CHECK(trio < NENGINES, "TRIO in this build");
-    /* FILTER: the response on an engine with a cutoff (TRIO's CUT and MODE, ORACLE's CUTOFF), none without (PHYS) */
+    /* FILTER: the shared voice stage's response (vstage.c): none while its TYPE is OFF, on every engine once on; CUT
+     * moves it, each TYPE its own shape */
     set_engine_of(&trk[0], trio);
     {
-        uint32_t filt = sub_of(AB_SOUND, "FILT"), h0, k, mode = 8u;
-        CHECK(page_alone(AB_SOUND, filt, "TRIO FILTER", "filter"), "TRIO FILTER: the response's picture");
+        uint32_t filt = sub_of(AB_SOUND, "FILT"), h0, k;
+        vs_set(0, VS_TYPE, VS_OFF);
+        CHECK(!page_alone(AB_SOUND, filt, "FILTER OFF", "filter_off"), "FILTER OFF: no picture (the overview instead)");
+        vs_set(0, VS_TYPE, VS_LP);
+        CHECK(page_alone(AB_SOUND, filt, "TRIO FILTER", "filter"), "FILTER LP: the response's picture");
+        CHECK(filt < and_nsubs && and_subs[filt].c[0] == AV_C(VS_TYPE) && and_subs[filt].c[1] == AV_C(VS_CUT),
+              "FILTER: TYPE and CUT on encoders 1 and 2");
         h0 = pic_sum();
-        if (filt < and_nsubs && and_subs[filt].c[0] != PID_NONE)   /* (CUT) */
-            and_set(and_subs[filt].c[0], 0, and_get(and_subs[filt].c[0], 0) > 64 ? 20 : 110);
-        page_alone(AB_SOUND, filt, "TRIO FILTER, cutoff turned", "filter_cut");
-        CHECK(pic_sum() != h0, "TRIO FILTER: the cutoff turned moves the response");
-        for (k = 0; k < 8u; k++) {               /* (MODE: the filter's type, LP BP HP NOTCH) */
-            const param_desc_t *d = track_desc(&trk[0], P_E0 + k);
-            if (d && d->fmt == F_ENUM && d->names && !strcmp(d->names[0], "LP")) mode = k;
-        }
-        CHECK(mode < 8u, "TRIO: a filter type (MODE)");
-        if (mode < 8u) {
-            static const uint32_t TY[3] = {PC_FLT_BP, PC_FLT_HP, PC_FLT_NOTCH};
-            static const char *const TN[3] = {"filter_bp", "filter_hp", "filter_notch"};
-            const param_desc_t *d = track_desc(&trk[0], P_E0 + mode);
-            int32_t v;
-            for (k = 0; k < 3u; k++) {
+        vs_set(0, VS_CUT, 20);
+        page_alone(AB_SOUND, filt, "FILTER, cutoff turned", "filter_cut");
+        CHECK(pic_sum() != h0, "FILTER: the cutoff turned moves the response");
+        {
+            static const uint32_t TY[2] = {VS_BP, VS_HP};
+            static const char *const TN[2] = {"filter_bp", "filter_hp"};
+            for (k = 0; k < 2u; k++) {
                 h0 = pic_sum();
-                for (v = d->min; v <= d->max && pc_flt_type(0) != TY[k]; v++)
-                    trk[0].p[P_E0 + mode] = (int16_t)v;
-                CHECK(pc_flt_type(0) == TY[k], "TRIO: MODE sets the filter type %u", TY[k]);
+                vs_set(0, VS_TYPE, TY[k]);
                 page_alone(AB_SOUND, filt, TN[k] + 7, TN[k]);
-                CHECK(pic_sum() != h0, "TRIO FILTER: %s drawn its own way", TN[k] + 7);
+                CHECK(pic_sum() != h0, "FILTER: %s drawn its own way", TN[k] + 7);
             }
-            trk[0].p[P_E0 + mode] = (int16_t)d->min;
         }
+        set_engine_of(&trk[0], ENGI_PHYS);
+        CHECK(page_alone(AB_SOUND, sub_of(AB_SOUND, "FILT"), "PHYS FILTER", "filter_phys"),
+              "PHYS FILTER: the shared filter on an engine with no filter of its own");
+        set_engine_of(&trk[0], ENGI_ORACLE);
+        CHECK(page_alone(AB_SOUND, sub_of(AB_SOUND, "FILT"), "ORACLE FILTER", "filter_oracle"),
+              "ORACLE FILTER: the shared filter's response");
+        vs_defaults(0);
     }
-    set_engine_of(&trk[0], ENGI_ORACLE);
-    CHECK(page_alone(AB_SOUND, sub_of(AB_SOUND, "FILT"), "ORACLE FILTER", "filter_oracle"),
-          "ORACLE FILTER: the response's picture (its CUTOFF)");
-    set_engine_of(&trk[0], ENGI_PHYS);
-    CHECK(!page_alone(AB_SOUND, sub_of(AB_SOUND, "FILT"), "PHYS FILTER", "filter_phys"),
-          "PHYS FILTER: no cutoff of its own, no picture (the overview instead)");
     set_engine_of(&trk[0], trio);
     btn(AB_PLAY);
     run_ms(1500);

@@ -74,15 +74,18 @@ static void and_ui_say(const char *s)
 #include "and_texture.c"                          /* the texture engine: a granular cloud, FX page's 3rd sub-page */
 #define AM_C(x) (AM_PID + (x))
 #define AT_C(x) (AT_PID + (x))
+#define AV_PID 0xE400u                            /* a track's shared voice stage (firmware/src/vstage.c): AV_PID + VS_* */
+#define AV_C(x) (AV_PID + (x))
 #include "and_pages.c"                            /* SOUND, MOD, FX from Tessera's page table, Monomachine-style */
 #include "and_project.c"                          /* the project file (format 1: the container, settings, patterns) */
 
 /* a setting of track tr (0..7): Tessera's (pid.c), an external track's (AE_PID + AE_*), or one of the song-wide
  * modules (AM_PID + AM_*, the master bus; AT_PID + AT_*, the texture engine: tr does not matter, each is the
- * same for every track) */
+ * same for every track), or a synth track's shared voice stage (AV_PID + VS_*: firmware/src/vstage.c) */
 static int and_is_ext(uint32_t pid, uint32_t tr) { return tr >= NTRK && pid >= AE_PID && pid < AE_PID + AE_NPRM; }
 static int and_is_master(uint32_t pid) { return pid >= AM_PID && pid < AM_PID + AM_NPRM; }
 static int and_is_texture(uint32_t pid) { return pid >= AT_PID && pid < AT_PID + AT_NPRM; }
+static int and_is_vstage(uint32_t pid, uint32_t tr) { return tr < NTRK && pid >= AV_PID && pid < AV_PID + VS_NPRM; }
 static const param_desc_t *and_desc(uint32_t pid, uint32_t tr)
 {
     int16_t *vp;
@@ -94,6 +97,8 @@ static const param_desc_t *and_desc(uint32_t pid, uint32_t tr)
         return am_desc(pid - AM_PID);
     if (and_is_texture(pid))
         return at_desc(pid - AT_PID);
+    if (and_is_vstage(pid, tr))
+        return vs_desc(pid - AV_PID);
     return and_is_ext(pid, tr) ? ae_desc(pid - AE_PID, tr - NTRK) : pid >= AE_PID ? 0 : pid_desc(pid, tr < NTRK ? tr : 0);
 }
 static int32_t and_get(uint32_t pid, uint32_t tr)
@@ -106,6 +111,8 @@ static int32_t and_get(uint32_t pid, uint32_t tr)
         return am_get(pid - AM_PID);
     if (and_is_texture(pid))
         return at_get(pid - AT_PID);
+    if (and_is_vstage(pid, tr))
+        return vs_get(tr, pid - AV_PID);
     return and_is_ext(pid, tr) ? ae_get(pid - AE_PID, tr - NTRK) : pid >= AE_PID ? 0 : pid_get(pid, tr < NTRK ? tr : 0);
 }
 static void and_set(uint32_t pid, uint32_t tr, int32_t v)
@@ -120,6 +127,8 @@ static void and_set(uint32_t pid, uint32_t tr, int32_t v)
         am_set(pid - AM_PID, v);
     else if (and_is_texture(pid))
         at_set(pid - AT_PID, v);
+    else if (and_is_vstage(pid, tr))
+        vs_set(tr, pid - AV_PID, v);
     else if (and_is_ext(pid, tr))
         ae_set(pid - AE_PID, tr - NTRK, v);
     else if (pid < AE_PID)
@@ -136,6 +145,8 @@ static const char *and_name(uint32_t pid, uint32_t tr)   /* the setting's full n
         return am_desc(pid - AM_PID)->label;
     if (and_is_texture(pid))
         return at_desc(pid - AT_PID)->label;
+    if (and_is_vstage(pid, tr))
+        return VS_NAME[pid - AV_PID];
     if (and_is_ext(pid, tr))
         return ae_desc(pid - AE_PID, tr - NTRK)->label;
     return pid < AE_PID && (e = pid_find(pid)) ? e->name : "";

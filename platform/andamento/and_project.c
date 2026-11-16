@@ -22,7 +22,7 @@
  *                   device's and the actions), the master bus (AM_PID), the texture engine (AT_PID), AS_SEL
  *   TRAK            u8 the track (0..7), then its chunks:
  *     PRMS            the track's settings as pairs. Tracks 1..4: AS_ENGINE and AS_PRESET first, then Tessera's
- *                     track settings (P_*, TX_*), then AS_PATTERN; tracks 5..8: and_ext.c's (AE_PID), every
+ *                     track settings (P_*, TX_*), the shared voice stage (AV_PID), then AS_PATTERN; tracks 5..8: and_ext.c's (AE_PID), every
  *                     generator's own three (AE_GPS)
  *     PATN            a pattern (tracks 1..4): u8 index, u8 step format (2), i16 LEN DIV SWING GATE, u8 DIR,
  *                     u8 steps n, n steps of ANDP_STEP_BYTES (the rest rests). An empty pattern is not written
@@ -342,6 +342,8 @@ static uint32_t andp_save(uint8_t *out, uint32_t max)
                 if ((e->flags & PID_F_TRACK) && andp_saved(e, t))
                     andp_pair(&w, e->pid, andp_core_get(e->pid, t));
             }
+            for (k = 0; k < VS_NPRM; k++)         /* the shared voice stage (vstage.c) */
+                andp_pair(&w, AV_PID + k, vs_get(t, k));
             andp_pair(&w, AS_PID + AS_PATTERN, trk[t].pattern);
         } else {
             for (k = 0; k < AE_NPRM; k++)
@@ -506,6 +508,7 @@ static void andp_defaults(void)
         if (TRK_DEF[k][0] != ENGI_DRUM)
             TRK_DEF_SCALE_OF(t);
         pattern_apply(t, 0);
+        vs_defaults(k);
     }
     song.sel = 0;
     cord_defaults();
@@ -536,6 +539,8 @@ static void andp_apply(uint32_t pid, int32_t v, uint32_t tr)
     } else if (tr >= NTRK) {
         if (pid >= AE_PID && (pid < AE_PID + AE_NPRM || (pid >= AE_PID + AE_GPS && pid < AE_PID + AE_GPS + 3u * (AE_GENS - 1u))))
             ae_set(pid - AE_PID, tr - NTRK, v);
+    } else if (pid >= AV_PID && pid < AV_PID + VS_NPRM) {
+        vs_set(tr, pid - AV_PID, v);
     } else if (pid < AE_PID && !andp_per_pattern(pid)) {
         const pid_entry_t *e = pid_find(pid);
         if (e && (e->flags & PID_F_TRACK))
