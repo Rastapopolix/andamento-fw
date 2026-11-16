@@ -8,7 +8,9 @@
  *   drawn     the picture lights something (dim at least: an empty pattern, ANSWER before it hears a phrase)
  *   inside    nothing outside the picture's rows (11..51): its header and tabs are never drawn over
  *   GEN       the page screen on GEN shows it (the 8 tracks' overview only elsewhere)
- *   QUAD      drawn for this screen (and_pic_quad): a clear row between its four rows, the track shown boxed */
+ *   QUAD      drawn for this screen (and_pic_quad): a clear row between its four rows, the track shown boxed
+ * and the pages' own: ENV on AMP, FM6's EG RATE / LVL and PITCH EG / LV (a rate, a level, the operator changing it),
+ * FILTER (TRIO: the cutoff moving it, each MODE its own shape; ORACLE; none on PHYS), LFO, PIECE */
 #define AND_LINT 1                               /* and_fb.c keeps the text drawn (and_lint.h) */
 #include "../web/andamento/sim.c"
 
@@ -101,6 +103,14 @@ static int page_alone(uint32_t p, uint32_t sub, const char *where, const char *n
     dump(name);
     return has;
 }
+static uint32_t eng_named(const char *n)        /* an engine by its name (NENGINES: not in this build) */
+{
+    uint32_t e;
+    for (e = 0; e < NENGINES; e++)
+        if (!strcmp(N_ENGNAME[e], n))
+            return e;
+    return NENGINES;
+}
 static uint32_t pic_sum(void)                     /* the picture's rows, summed: did it change */
 {
     uint32_t x, y, h = 0;
@@ -114,7 +124,7 @@ int main(int argc, char **argv)
 {
     const param_desc_t *m;
     int32_t mode;
-    uint32_t g;
+    uint32_t g, trio;
     char where[48];
     dir = argc > 1 ? argv[1] : 0;
     web_boot();
@@ -196,6 +206,72 @@ int main(int argc, char **argv)
         CHECK(!page_alone(AB_SOUND, sub_of(AB_SOUND, "AMP"), "FM6 AMP", "env_fm6"),
               "FM6 AMP: no shared envelope, no picture (the overview instead)");
     }
+    /* FM6's own envelopes: EG RATE / LVL (the operator OP picks) and PITCH EG / LV */
+    {
+        uint32_t k, n = and_nsub(AB_SOUND), eg = n, peg = n, h0;
+        for (k = 0; k < n; k++)
+            if (and_is_ap(and_subs[k].c[0])) {
+                uint32_t gr = PAGES[(and_subs[k].c[0] - AP_PID) / 4u].graph;
+                if (gr == GR_FMEG && eg == n) eg = k;
+                if (gr == GR_FMPEG && peg == n) peg = k;
+            }
+        CHECK(eg < n && peg < n, "FM6: its EG and PITCH EG sub-pages (%u, %u of %u)", eg, peg, n);
+        CHECK(page_alone(AB_SOUND, eg, "FM6 EG", "fm6_eg"), "FM6 EG RATE / LVL: the envelope's picture");
+        h0 = pic_sum();
+        and_set(and_subs[eg].c[0], 0, and_get(and_subs[eg].c[0], 0) > 50 ? 10 : 90);   /* (R1) */
+        page_alone(AB_SOUND, eg, "FM6 EG, R1 turned", "fm6_eg_r1");
+        CHECK(pic_sum() != h0, "FM6 EG: R1 turned changes the envelope");
+        h0 = pic_sum();
+        and_set(and_subs[eg].c[5], 0, and_get(and_subs[eg].c[5], 0) > 50 ? 10 : 90);   /* (L2) */
+        page_alone(AB_SOUND, eg, "FM6 EG, L2 turned", "fm6_eg_l2");
+        CHECK(pic_sum() != h0, "FM6 EG: L2 turned changes the envelope");
+        h0 = pic_sum();
+        fm6_opsel = 1;                           /* (OP2: its own envelope, R1 and L2 as the preset has them) */
+        page_alone(AB_SOUND, eg, "FM6 EG OP2", "fm6_eg_op2");
+        CHECK(pic_sum() != h0, "FM6 EG: OP2's envelope, not OP1's");
+        fm6_opsel = 0;
+        CHECK(page_alone(AB_SOUND, peg, "FM6 PITCH EG", "fm6_peg"), "FM6 PITCH EG / LV: the envelope's picture");
+    }
+    trio = eng_named("TRIO");
+    CHECK(trio < NENGINES, "TRIO in this build");
+    /* FILTER: the response on an engine with a cutoff (TRIO's CUT and MODE, ORACLE's CUTOFF), none without (PHYS) */
+    set_engine_of(&trk[0], trio);
+    {
+        uint32_t filt = sub_of(AB_SOUND, "FILT"), h0, k, mode = 8u;
+        CHECK(page_alone(AB_SOUND, filt, "TRIO FILTER", "filter"), "TRIO FILTER: the response's picture");
+        h0 = pic_sum();
+        if (filt < and_nsubs && and_subs[filt].c[0] != PID_NONE)   /* (CUT) */
+            and_set(and_subs[filt].c[0], 0, and_get(and_subs[filt].c[0], 0) > 64 ? 20 : 110);
+        page_alone(AB_SOUND, filt, "TRIO FILTER, cutoff turned", "filter_cut");
+        CHECK(pic_sum() != h0, "TRIO FILTER: the cutoff turned moves the response");
+        for (k = 0; k < 8u; k++) {               /* (MODE: the filter's type, LP BP HP NOTCH) */
+            const param_desc_t *d = track_desc(&trk[0], P_E0 + k);
+            if (d && d->fmt == F_ENUM && d->names && !strcmp(d->names[0], "LP")) mode = k;
+        }
+        CHECK(mode < 8u, "TRIO: a filter type (MODE)");
+        if (mode < 8u) {
+            static const uint32_t TY[3] = {PC_FLT_BP, PC_FLT_HP, PC_FLT_NOTCH};
+            static const char *const TN[3] = {"filter_bp", "filter_hp", "filter_notch"};
+            const param_desc_t *d = track_desc(&trk[0], P_E0 + mode);
+            int32_t v;
+            for (k = 0; k < 3u; k++) {
+                h0 = pic_sum();
+                for (v = d->min; v <= d->max && pc_flt_type(0) != TY[k]; v++)
+                    trk[0].p[P_E0 + mode] = (int16_t)v;
+                CHECK(pc_flt_type(0) == TY[k], "TRIO: MODE sets the filter type %u", TY[k]);
+                page_alone(AB_SOUND, filt, TN[k] + 7, TN[k]);
+                CHECK(pic_sum() != h0, "TRIO FILTER: %s drawn its own way", TN[k] + 7);
+            }
+            trk[0].p[P_E0 + mode] = (int16_t)d->min;
+        }
+    }
+    set_engine_of(&trk[0], ENGI_ORACLE);
+    CHECK(page_alone(AB_SOUND, sub_of(AB_SOUND, "FILT"), "ORACLE FILTER", "filter_oracle"),
+          "ORACLE FILTER: the response's picture (its CUTOFF)");
+    set_engine_of(&trk[0], ENGI_PHYS);
+    CHECK(!page_alone(AB_SOUND, sub_of(AB_SOUND, "FILT"), "PHYS FILTER", "filter_phys"),
+          "PHYS FILTER: no cutoff of its own, no picture (the overview instead)");
+    set_engine_of(&trk[0], trio);
     btn(AB_PLAY);
     run_ms(1500);
     CHECK(page_alone(AB_MOD, 0, "LFO", "lfo"), "MOD's LFO: the LFO's picture");

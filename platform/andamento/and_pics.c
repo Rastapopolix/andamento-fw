@@ -17,10 +17,11 @@
  *   tracks 5..8  their generator (and_ext.c runs Tessera's own: Turing, Euclid, Markov, Awake, Poly, Series)
  *   inks      the FM-1's ink 15, its dim 5, the background 0; a track's own ink (MOSAIC's) is the ink (one ink here)
  *
- * The pages' own (and_pic_page): ENV on SOUND's AMP, LFO on MOD's first, PIECE on PIECE's first, the FM-1's too.
+ * The pages' own (and_pic_page), the FM-1's too: ENV on SOUND's AMP, FILTER's response on SOUND's FILT (an engine with
+ * a cutoff), FM6's own envelopes on its EG RATE / LVL and PITCH EG / LV sub-pages, LFO on MOD's first, PIECE on
+ * PIECE's first.
  *
- * Not yet: FILTER's response, FM6's own envelopes (EG RATE / LVL), the FM-1's layers drawn over a picture (QUAD's
- * column, the keys' edits). */
+ * Not yet: the FM-1's layers drawn over a picture (QUAD's column, the keys' edits). */
 
 #define PC_BG 0u
 #define PC_INK 15u
@@ -657,7 +658,7 @@ static void pc_pic_seed(uint32_t tr)
     if (n) pc_fill(87, 102, (int32_t)(n * 30u / len) ? (int32_t)(n * 30u / len) : 1, 5, PC_INK);
 }
 
-/* ---- the pages' own: ENV (SOUND's AMP), LFO (MOD's first), PIECE (PIECE's first) ---- */
+/* ---- the pages' own: ENV (SOUND's AMP), FM6's envelopes, FILTER, LFO (MOD's first), PIECE (PIECE's first) ---- */
 
 /* ENV: the envelope from its 4 settings (attack, decay, sustain, release, each 0..127 of its range): the curve, the
  * area under it hatched dim, a point at each corner. The FM-1's mo_pic_env (From Tessera 81aa730f) without the ring
@@ -686,6 +687,92 @@ static void pc_pic_env(int32_t va, int32_t vd, int32_t vs, int32_t vr)
             pc_disc(hx[i], hy[i], 1, PC_INK);
     }
 #undef PCY
+}
+
+/* FM6's own envelopes, EG RATE over EG LVL (the operator OP picks, fm6_opsel) and PITCH EG over PITCH LV: the DX7
+ * envelope from L4 by R1..R3 to L1..L3, held, then R4 back to L4 (a slower rate a wider segment); the area under it
+ * hatched dim, a point at each level; PITCH: the note's own pitch (level 50) dashed. The FM-1's mo_pic_dxenv (From
+ * Tessera 81aa730f) without its ring on the setting turning: Andamento shows that setting large while it turns, and
+ * its sub-page has the rates and the levels together */
+static void pc_pic_dxenv(uint32_t tr, int pitch)
+{
+    const uint8_t *v = fm6_patch[tr % NTRK];
+    const uint8_t *r = pitch ? v + FP_PR1 : v + (5u - fm6_opsel % 6u) * FP_OP + FP_R1;
+    const uint8_t *l = pitch ? v + FP_PL1 : v + (5u - fm6_opsel % 6u) * FP_OP + FP_L1;
+    int32_t x0 = 2, x1 = 117, top = 58, bot = 98, px[6], py[6], w[5], sum = 30, i, x;
+#define PCDY(a) (bot - (int32_t)(a) * (bot - top) / 99)
+    for (i = 0; i < 4; i++)
+        sum += w[i < 3 ? i : 4] = 8 + (99 - (r[i] > 99u ? 99 : (int32_t)r[i])) * 38 / 99;
+    w[3] = 30;                                   /* (the held level's) */
+    px[0] = x0;
+    py[0] = PCDY(l[3] > 99u ? 99u : l[3]);
+    for (i = 0; i < 5; i++) {
+        px[i + 1] = px[i] + w[i] * (x1 - x0) / sum;
+        py[i + 1] = i < 3 ? PCDY(l[i] > 99u ? 99u : l[i]) : i == 3 ? py[3] : py[0];
+    }
+    px[5] = x1;
+    for (x = x0, i = 0; x <= x1; x++) {          /* the area under it */
+        int32_t y;
+        while (i < 5 && x > px[i + 1]) i++;
+        y = i < 5 && px[i + 1] > px[i] ? py[i] + (py[i + 1] - py[i]) * (x - px[i]) / (px[i + 1] - px[i]) : py[5];
+        if (y < bot && !(x & 1)) pc_vl(x, y + 1, bot - y, PC_DIM);
+    }
+    if (pitch) pc_dash(x0, PCDY(50), x1 - x0, PC_INK);
+    pc_hl(x0, bot, x1 - x0 + 1, PC_INK);
+    for (i = 0; i < 5; i++)
+        pc_line(px[i], py[i], px[i + 1], py[i + 1], PC_INK);
+    for (i = 1; i < 5; i++) {
+        pc_disc(px[i], py[i], 2, PC_BG);
+        pc_disc(px[i], py[i], 1, PC_INK);
+    }
+#undef PCDY
+}
+
+/* FILTER: the filter's response as its type shapes it, flat, the resonance's peak at the cutoff (dotted), the slope;
+ * the area under it hatched dim. The FM-1's mo_pic_filter and ui_stage.c's flt_curve and flt_engine_type (From
+ * Tessera 81aa730f; ui_stage.c is not in the board's build), cut and res as 0..127 of their ranges */
+enum { PC_FLT_LP, PC_FLT_BP, PC_FLT_HP, PC_FLT_NOTCH };
+/* track tr's engine's filter type: the knob that sets it (an enum named LP, BP, HP, NOT(CH): TRIO's MODE), else a
+ * low-pass (ORACLE's) */
+static uint32_t pc_flt_type(uint32_t tr)
+{
+    const track_t *t = &trk[tr % NTRK];
+    uint32_t i;
+    for (i = 0; i < 8u; i++) {
+        const param_desc_t *d = track_desc(t, P_E0 + i);
+        int32_t v = t->p[P_E0 + i];
+        const char *n;
+        if (!d || d->fmt != F_ENUM || !d->names || !str_eq(d->names[0], "LP") || v < d->min || v > d->max)
+            continue;
+        n = d->names[v - d->min];
+        return str_eq(n, "BP") ? PC_FLT_BP : str_eq(n, "HP") ? PC_FLT_HP : str_prefix(n, "NOT") ? PC_FLT_NOTCH : PC_FLT_LP;
+    }
+    return PC_FLT_LP;
+}
+/* the response's height over the flat level (1/16 px) d px from the cutoff: the resonance's peak (peak high, w wide in
+ * px^2), then the slope s (1/16 px a px; a band-pass half of it on each side); a notch dips deep, narrower as the
+ * resonance rises */
+static int32_t pc_flt_curve(uint32_t type, int32_t d, int32_t w, int32_t peak, int32_t s, int32_t deep, int32_t res)
+{
+    int32_t bump = peak * w / (w + d * d), ad = d < 0 ? -d : d, lp = bump - (d > 0 ? d * s : 0), bp = bump - ad * s / 2;
+    if (type == PC_FLT_NOTCH) {
+        int32_t q = 8 - clamp(res, 0, 127) * 7 / 127, nw = w * q * q / 9 + 1;
+        return -deep * nw / (nw + d * d);
+    }
+    return type == PC_FLT_BP ? bp : type == PC_FLT_HP ? bump - (d < 0 ? ad * s : 0) : lp;
+}
+static void pc_pic_filter(int32_t cut, int32_t res, uint32_t type)
+{
+    int32_t x, fc = 4 + clamp(cut, 0, 127) * 108 / 127, peak = clamp(res, 0, 127) * 20 / 127, y0 = 76, py = 0;
+    for (x = PC_Y0 + 2; x < 100; x += 3) pc_px(fc, x, PC_INK);
+    for (x = 2; x < 118; x++) {
+        int32_t d = x - fc, y = y0 - pc_flt_curve(type, d, 16, peak * 16, 14, (100 - y0) * 16, res) / 16;
+        y = clamp(y, PC_Y0 + 2, 100);
+        if (y < 100 && !(x & 1)) pc_vl(x, y + 1, 100 - y, PC_DIM);
+        if (x > 2) pc_line(x - 1, py, x, y, PC_INK);
+        py = y;
+    }
+    pc_hl(2, 100, 116, PC_INK);
 }
 
 /* LFO: one cycle of the track's LFO 1 from its PHASE, a dot where it is now; FREE or SYNC and its rate at the foot
@@ -815,8 +902,9 @@ static int and_pic_gen(uint32_t tr)
 }
 
 /* the picture of page p's sub-page sub for track tr (0..3; tracks 5..8 have none of these pages): ENV on SOUND's AMP
- * when its first row is the envelope's 4 settings, LFO on MOD's first, PIECE on PIECE's first; 0 for the others
- * (and_ui.c draws its 8 tracks there) */
+ * when its first row is the envelope's 4 settings, the response on SOUND's FILTER when the engine has a cutoff, FM6's
+ * envelope on its EG sub-pages, LFO on MOD's first, PIECE on PIECE's first; 0 for the others (and_ui.c draws its 8
+ * tracks there) */
 static int and_pic_page(uint32_t p, uint32_t sub, uint32_t tr)
 {
     if (tr >= NTRK || sub >= and_nsubs)
@@ -832,6 +920,33 @@ static int and_pic_page(uint32_t p, uint32_t sub, uint32_t tr)
         }
         pc_pic_env(v[0], v[1], v[2], v[3]);
         return 1;
+    }
+    if (p == AB_SOUND && !strcmp(and_subs[sub].tab, "FILT")) {   /* the engine's cutoff and RES, by the FM-1's rule */
+        int32_t cut = -1, res = 0;                                     /* (ui_pages.c pv_pic) */
+        uint32_t k;
+        for (k = 0; k < 8u; k++) {
+            uint16_t c = and_subs[sub].c[k];
+            const param_desc_t *d = c != PID_NONE ? and_desc(c, tr) : 0;
+            int32_t v;
+            if (!d || !d->label || d->max <= d->min)
+                continue;
+            v = (clamp(and_get(c, tr), d->min, d->max) - d->min) * 127 / (d->max - d->min);
+            if (cut < 0 && (d->fmt == F_CUTOFF || !strcmp(d->label, "CUTOFF")))
+                cut = v;
+            else if (!strcmp(d->label, "RES") || !strcmp(d->label, "RESO"))
+                res = v;
+        }
+        if (cut < 0)
+            return 0;                            /* (no filter of its own: PHYS, DRUM) */
+        pc_pic_filter(cut, res, pc_flt_type(tr));
+        return 1;
+    }
+    if (p == AB_SOUND && and_is_ap(and_subs[sub].c[0])) {   /* FM6's EG RATE / LVL, PITCH EG / LV */
+        uint32_t g = PAGES[(and_subs[sub].c[0] - AP_PID) / 4u % NPAGES].graph;
+        if (g == GR_FMEG || g == GR_FMPEG) {
+            pc_pic_dxenv(tr, g == GR_FMPEG);
+            return 1;
+        }
     }
     if (p == AB_MOD && sub == 0u) {
         pc_pic_lfo(&trk[tr]);

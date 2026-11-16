@@ -20,7 +20,7 @@ GPL-3.0-only. **Status: in development, no hardware yet.** By **Theo Dainis**
 | `platform/andamento/` | Andamento's own: the two screens, the page map, the keys, tracks 5 to 8, master bus, texture engine |
 | `web/andamento/` | the virtual prototype: the whole instrument in a browser (`web/andamento/build.sh`, needs Emscripten) |
 | `firmware/src/` | the core inherited from Tessera: generators, sequencer, engines, mods |
-| `tests/` | host tests; Andamento's are `tests/and_*_test.c` and `tests/oled_render.c` |
+| `tests/` | host tests: `tests/and_tests.sh` runs Andamento's (`tests/and_*_test.c`, `tests/oled_render.c`) and the core's at 48 kHz |
 
 Much of the tree is still Tessera's FM-1 code (its HAL, UI, installer, site and docs) and is being removed or
 rewritten as Andamento needs: see `CLAUDE.md`. Tessera's own README is kept as `README-tessera.md` until then.
@@ -30,6 +30,7 @@ rewritten as Andamento needs: see `CLAUDE.md`. Tessera's own README is kept as `
 ```
 make -C platform/daisy LIBDAISY_DIR=/path/to/libDaisy   # the firmware (arm-none-eabi)
 web/andamento/build.sh                                  # the browser prototype (Emscripten)
+tests/and_tests.sh                                      # the host tests (a C compiler, Python 3, Pillow)
 ```
 
 ## Credits
