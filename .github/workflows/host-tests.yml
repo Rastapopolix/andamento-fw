@@ -1,0 +1,38 @@
+name: Host tests (Andamento)
+
+# Andamento's host tests (tests/and_tests.sh): its own code in platform/andamento and the shared core, built for the PC
+# at the Daisy Seed's 48 kHz. No board, no FM-1 package; nothing is published. The screens' PNGs are kept as an
+# artifact for a week, to look at what a change drew.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Pillow and numpy (the generated headers, the PNGs, fs_test's pitch tracker)
+        run: python -m pip install --quiet pillow numpy
+      - name: tests/and_tests.sh
+        run: tests/and_tests.sh
+      - name: Logs and screens
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: andamento-host-tests
+          path: |
+            build/andamento/host/log/
+            build/oled/*.png
+          retention-days: 7
+          if-no-files-found: ignore
