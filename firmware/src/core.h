@@ -528,6 +528,12 @@ static uint8_t settings_batt_off;   /* MENU BATTERY OFF: the header shows the ba
 static uint8_t settings_mute_q;    /* MENU MUTES: GLO's mute keys while playing land NOW (0), on the next BAR (1) or PHRASE
                                      * (2) (entries.c mute_press; saved: favorites.factory[15][24] bits 6..7) */
 #define TSEL (&trk[song.sel])    /* the selected track */
+/* Andamento: the platform's own outputs besides USB (0: none, as on the FM-1). out_note_hook: every note a track starts
+ * (vel 1..127) or ends (vel 0) as voice.c trk_note_on / trk_note_off see them, its SOUND OFF or not (the CV / gate
+ * pairs: platform/andamento/and_out.c); out_midi_hook: every MIDI OUT message, usb.c midi_out_event's packet (the
+ * board's DIN / TRS, the browser's Web MIDI). Called from the audio ISR */
+static void (*out_note_hook)(const track_t *t, uint32_t note, uint32_t vel);
+static void (*out_midi_hook)(uint32_t pkt);
 
 #include "microtonal.h"
 
