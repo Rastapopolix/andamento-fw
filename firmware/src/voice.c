@@ -16,6 +16,7 @@
  * declicks it); one of the part's own is restarted in place, as before. Extra UNISON
  * voices only start when there is room. */
 static uint32_t vage;                                   /* voice ages: one clock for every part */
+#include "vstage.c"                                     /* Andamento's shared filter, drive and amp per voice */
 static int32_t lfo_wave(track_t *t, uint32_t ph)
 {
     switch (t->p[P_LWAVE]) {
@@ -422,6 +423,7 @@ static void voice_start(track_t *t, voice_t *v, uint32_t note, uint32_t vel, int
         v->env = 0;
         v->env_out = 0;
         v->side = t->sp_alt; t->sp_alt ^= 1u;
+        vs_voice_reset((uint32_t)(t - trk), (uint32_t)(v - t->v));
     }                                                   /* sounding: the attack starts from the current level */
     if (!eng_state_prepare(t)) { v->active = v->gate = 0; return; }
     e->note_on(t, v);
@@ -834,7 +836,7 @@ static __attribute__((noinline)) uint32_t track_render_audio(track_t *t, int32_t
             if (e->amp)                                 /* the engine's own amplitude curve */
                 env = e->amp(t, v, env);
             m.envq15 = e->ownenv ? 0 : env;
-            m.amp1 = e->ownenv ? env : mulq15(env, v->vel * 258);
+            m.amp1 = e->ownenv ? env : mulq15(env, vs_vel_gain(ti, v->vel));
             if (p[P_LD_AMP])
                 m.amp1 = mulq15(m.amp1, 32767 - mulq15(p[P_LPOL] ? lfo : (lfo + 32768) >> 1, p[P_LD_AMP] * 258));
             if (fade)                                   /* linear to 0 over the fade */
@@ -867,7 +869,22 @@ static __attribute__((noinline)) uint32_t track_render_audio(track_t *t, int32_t
         }
         /* 1/16 st and 1/4096 -> Q24 octaves: the voice's own offset (the matrix's pitch too), without TUNE and bend */
         m.plog = (m.pitch16 - tune - bend16 - (int32_t)v->note * 16) * 87381 + (m.fine - tune_fine - bend_fine) * 5909;
-        engine_render(t,v,e,spread_on>v->side?spread_buf:out,n,&m);
+        if (vs_on(ti) && !(audio_batch_active && e == &ENG_DRUM)) {   /* the shared stage (vstage.c) */
+            int32_t vb[CTL], *dst = spread_on > v->side ? spread_buf : out, cut = vs_cutoff(ti, m.cutoff, m.pitch16);
+            vmod_t mu = m;
+            uint32_t k;
+            if (vs_filter_on(ti))
+                mu.cutoff = 0;                          /* (the cutoff modulation is the filter's now) */
+            if (!e->ownenv)
+                mu.amp0 = mu.amp1 = 32767;              /* full amplitude; the ramp after the filter and drive */
+            for (k = 0; k < n; k++)
+                vb[k] = 0;
+            engine_render(t, v, e, vb, n, &mu);
+            vs_voice(ti, i, vb, n, cut, &m, !e->ownenv);
+            for (k = 0; k < n; k++)
+                dst[k] += vb[k];
+        } else
+            engine_render(t,v,e,spread_on>v->side?spread_buf:out,n,&m);
         nr++;
     }
     engine_join();

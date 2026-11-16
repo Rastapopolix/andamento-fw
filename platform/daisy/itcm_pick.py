@@ -29,6 +29,7 @@ PICK = [
     'or_render', 'or_block', 'or_env_tick',
     'phys_render', 'px_*_block', 'px_*_run', 'px_sin', 'px_exp2',
     'd9_render*', 'd9_env_exp', 'drum909_render*',
+    'vs_voice',                        # the shared voice stage (vstage.c): a loop per voice while a track has it on
     # once a block
     'mod_voice*', 'pl_env', 'cord_block', 'mix_block',
     # Andamento's master bus and texture engine: a loop over the block each, and nothing at all while MIX is 0 (the
