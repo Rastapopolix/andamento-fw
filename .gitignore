@@ -4,7 +4,6 @@ __pycache__/
 firmware/src/*.bak*
 firmware/src/*.pre*
 tools/*.pre*
-fm1-recovery-backups/
 *.fwsc
 
 .nightly-deps/

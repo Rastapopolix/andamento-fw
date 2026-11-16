@@ -86,7 +86,7 @@ Melodee's additions and modifications are credited separately in the source file
 | klattsch by Tony Gies (<https://github.com/tgies/klattsch>): design reference for the VOICE engine; no code copied. Formant data from Klatt (1980) / Hillenbrand et al. (1995) | MIT (klattsch) | credit only |
 | libDaisy by Electrosmith (<https://github.com/electro-smith/libDaisy>): the Daisy Seed's hardware library (board, codec, audio, LED), which `platform/daisy/` builds against for Andamento; fetched at build time, not in this tree, and not in the FM-1 firmware. `platform/daisy/tessera_daisy.lds` is its `core/STM32H750IB_qspi.lds` with Tessera's placements added, and keeps its licence | MIT | `platform/daisy/`, `platform/daisy/tessera_daisy.lds`, `LICENSES/MIT-libDaisy.txt` |
 | u8g2 by olikraus (<https://github.com/olikraus/u8g2>, `csrc/u8x8_d_ssd1322.c`, `u8x8_d_ssd1322_nhd_128x64`): the SSD1322 register values for Newhaven's 128 x 64 module (its init sequence, column offset and remap), used as data in Andamento's screen driver; no code copied | BSD-2-Clause (u8g2) | `platform/andamento/ssd1322.c` |
-| JieLi AC79 SDK by JieLi Technology: three external files go into every `.fwsc` package; the optional RAM recovery helper is in `assets/recovery/` | Apache-2.0 | `LICENSES/Apache-2.0.txt` |
+| JieLi AC79 SDK by JieLi Technology: three external files go into every `.fwsc` package | Apache-2.0 | `LICENSES/Apache-2.0.txt` |
 
 On the device, HOME held > ABOUT opens the information screen; turning PRESETS scrolls on into
 CREDITS, a short list of these authors, licences and source URLs.
@@ -111,28 +111,10 @@ files may be distributed together with GPL-3.0 code; Melodee itself stays GPL-3.
 Every distribution of a package carries the licence texts with it: the release folder
 (`tools/build.py --release`).
 
-## Standalone ROM recovery tool
-
-The optional `fm1-recover` executables include `assets/recovery/wl82loader.bin`,
-an unmodified RAM recovery helper from JieLi's AC79 SDK under Apache-2.0. Its
-source version and checksum are recorded in `assets/recovery/README.md`; it is
-loaded into RAM, not installed in flash. Copyright remains with JieLi Technology.
-This SDK file is included in the source tree and the recovery distributions;
-the three SDK files in firmware packages are still read from an external checkout.
-
-Recovery archives carry Melodee's GPL-3.0-only licence, the SDK's Apache-2.0 licence,
-and the bundled Python/PyUSB/PyInstaller/libusb notices. libusb is dynamically
-loaded under LGPL-2.1-or-later; its corresponding source archive is included,
-and `--libusb PATH` allows using a replacement library. PyInstaller's bootloader
-exception permits distributing the generated executable under Melodee's licence.
-
 ## No vendor firmware material
 
 No M-VAVE material is part of Melodee. The firmware links no vendor code and contains no vendor
-data, and the packages hold only Melodee and the three SDK files above. The installer's
-"Return to official V15" holds only the official file's size and SHA-256: you select the
-official firmware file you downloaded yourself, and it is checked and installed in your browser,
-never uploaded or redistributed.
+data, and the packages hold only Melodee and the three SDK files above.
 
 ## Contributions
 
