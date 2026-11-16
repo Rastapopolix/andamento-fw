@@ -3,11 +3,12 @@
  * the established editor/recording paths; switching commits it and loads one
  * bounded 64-step copy. No flash work runs in the audio interrupt. */
 typedef struct { step_t step[NSTEP]; int16_t timing[4]; } pattern_t;
-/* 12 B steps (step v2) no longer fit one RAM area: tracks 1-2 in the pool, 3 in static RAM, 4 in .noinit (cleared at
- * boot by pattern_init, not retained), so each bank of the audio arena and static RAM keep their headroom */
+/* 12 B steps (step v2) no longer fit one RAM area: tracks 1-2 in the pool, 3 in static RAM, 4 and on (Andamento's 4..8)
+ * in .noinit (cleared at boot by pattern_init, not retained), so each bank of the audio arena and static RAM keep their
+ * headroom */
 static pattern_t pattern_pool[2][NPAT] __attribute__((section(".pool")));
 static pattern_t pattern_bss[NPAT];
-static pattern_t pattern_noinit[NPAT] __attribute__((section(".noinit")));
+static pattern_t pattern_noinit[NTRK - 3u][NPAT] __attribute__((section(".noinit")));
 static uint8_t chain_patterns[CHAIN_ROWS][NTRK];
 static uint8_t pattern_dir[NTRK][NPAT];             /* each pattern's DIR (TX_SEQ_DIR, SEQ_*; seq_dir.c), 0 FWD: kept
                                                      * apart from pattern_t, which the audio arena holds */
@@ -23,7 +24,8 @@ static uint32_t seq_dir_cont(const track_t *t, uint32_t from, uint32_t to, uint3
 static const step_t *seq_dir_tie(const track_t *t, const step_t *s, step_t *tv, uint32_t len);
 static pattern_t *pattern_at(uint32_t track, uint32_t bank)
 {
-    return track < 2u ? &pattern_pool[track][bank] : track == 2u ? &pattern_bss[bank] : &pattern_noinit[bank];
+    return track < 2u ? &pattern_pool[track][bank] : track == 2u ? &pattern_bss[bank] :
+           &pattern_noinit[(track - 3u) % (NTRK - 3u)][bank];
 }
 static void pattern_commit(track_t *t)
 {
