@@ -11,9 +11,10 @@
  *                            (itcm_pick.py chooses, at build time). No wait states and no cache misses, where
  *                            QSPI code can stall on a miss.
  *   DTCM 128 KB  .dtcm_data  the tables those read for every sample (.dsp_tables and the hot const tables)
- *                .dtcm_bss   the state they write: tracks, effects, FM6's RAM tables, the mix batch, the first
- *                            banks of the audio arena (resources.c), .audio_scratch. The stack shares DTCM, from
- *                            the top down: DTCM_STACK is kept free for it.
+ *                .dtcm_bss   the state they write: tracks, effects, FM6's RAM tables, the mix batch, the audio
+ *                            arena's small banks (resources.c: data, retained), .audio_scratch. The stack shares
+ *                            DTCM, from the top down: DTCM_STACK is kept free for it. (The arena's 20 KB low bank
+ *                            moved to AXI SRAM when the core went to 8 tracks: trk doubled, to 21 KB)
  *   AXI SRAM     .bss        as libDaisy, plus the FM-1's .pool (effect lines, big buffers) and .noinit (zeroed:
  *                            nothing is kept across a reset on the Daisy yet)
  *   SDRAM 64 MB  .sdram_bss  nothing of Tessera's yet: long buffers (Beads, samples) go there (DSY_SDRAM_BSS).
@@ -95,7 +96,7 @@ SECTIONS
 		*(.audio_scratch*)
 		*tessera_core.o(.bss.trk .bss.fx_state .bss.fx_send_extra_* .bss.batch_*)
 		*tessera_core.o(.bss.FM6_SIN .bss.FM6_MKI_LOG .bss.FM6_MKI_EXP .bss.fm6_*)
-		*tessera_core.o(.bss.resource_host_low .bss.resource_host_data .bss.resource_host_retained)
+		*tessera_core.o(.bss.resource_host_data .bss.resource_host_retained)
 		. = ALIGN(8);
 		_edtcm_bss = .;
 	} > DTCMRAM

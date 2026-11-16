@@ -23,7 +23,7 @@ EXPECT = [
     ('fm6_run', 'ITCM'), ('or_samples', 'ITCM'), ('fx_reverb', 'ITCM'), ('fx_svf', 'ITCM'), ('master_samples', 'ITCM'),
     ('trio_render', 'ITCM'), ('phys_render', 'ITCM'),
     ('trk', 'DTCM'), ('fx_state', 'DTCM'), ('FM6_SIN', 'DTCM'), ('DSP_TANH', 'DTCM'), ('SINE', 'DTCM'),
-    ('resource_host_low', 'DTCM'), ('audio_batch_jobs', 'DTCM'),
+    ('resource_host_low', 'AXI SRAM'), ('audio_batch_jobs', 'DTCM'),
     ('resource_host', 'AXI SRAM'), ('screen_buf', 'RAM_D2_DMA'),
 ]
 
