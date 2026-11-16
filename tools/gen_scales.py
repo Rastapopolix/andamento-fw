@@ -4,7 +4,6 @@
 import argparse
 import json
 import math
-import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,18 +77,12 @@ def main():
     output += [f"    {{{len(row['pitch']) - 1}, SCALE_P{i}}}, /* {row['name']} */" for i, row in enumerate(rows[16:], 16)]
     output += ["};", ""]
     header = ROOT / "firmware/src/scales.h"
-    web = ROOT / "web/editor.html"
-    html = web.read_text()
-    html = re.sub(r'const SCALE_INFO = .*?; /\* generated scale metadata \*/', 'const SCALE_INFO = ' + json.dumps(info) + '; /* generated scale metadata */', html)
-    html = re.sub(r'E\("SCL", \[[^\]]*\], 0\)', f'E("SCL", {names}, 0)', html)
-    html = re.sub(r"const SCALE_DEGREES = \[[^\]]*\]; /\* generated scale degree counts \*/",
-                  "const SCALE_DEGREES = " + json.dumps([len(r["pitch"]) - 1 for r in rows]) + "; /* generated scale degree counts */", html)
-    for path, content in [(header, "\n".join(output)), (web, html)]:
-        if args.check:
-            if not path.exists() or path.read_text() != content:
-                raise SystemExit(f"Stale scale catalogue: {path}")
-        else:
-            path.write_text(content)
+    content = "\n".join(output)
+    if args.check:
+        if not header.exists() or header.read_text() != content:
+            raise SystemExit(f"Stale scale catalogue: {header}")
+    else:
+        header.write_text(content)
 
 
 if __name__ == "__main__":
