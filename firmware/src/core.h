@@ -12,7 +12,7 @@
 /* ------------------------------------------------------------ sizes --- */
 #define NVOICE 16                /* voice slots per part (FM6 plays Dexed's 16) */
 #define NPOLY 8                  /* the voices of an engine without its own cap (its per-voice state: engines.c eng_state) */
-#define NPART 4                  /* synth parts: tracks 1..4 */
+#define NPART 8                  /* synth parts: tracks 1..8 (Andamento 2026-11-16; the FM-1 had 4) */
 #ifndef MELODEE_RAM_AUDIO
 #define MELODEE_RAM_AUDIO 0       /* resident audio profile: full audio graph executes in SRAM */
 #endif
@@ -329,8 +329,9 @@ enum { SC_OFF, SC_1_2, SC_2_2, SC_1_3, SC_2_3, SC_3_3, SC_1_4, SC_2_4, SC_3_4, S
        SC_FIRST, SC_NFIRST, SC_COUNT };
 #define RECORD_MAX 1024u
 #define RECORD_UNIT 65536u                     /* fractional onset within its swung step; duration uses an exponent */
-/* owner: bank/track in low 5 bits, duration exponent in high 3. step: actual index in
- * low 6 bits, overview rounded forward in bit 6, wrapped to zero in bit 7. */
+/* owner: track * NPAT + bank (0..63: Andamento's 8 tracks; the FM-1's 32 left 3 bits for the exponent). length: bit 0
+ * the hit's own length (DRUM), bits 1..3 the duration's exponent (the FM-1 kept it in owner's top 3 bits). step: actual
+ * index in low 6 bits, overview rounded forward in bit 6, wrapped to zero in bit 7. */
 typedef struct { uint16_t on, duration; uint8_t note, vel, owner, step; int8_t pitch; uint8_t length; } recorded_note_t;
 _Static_assert(sizeof(recorded_note_t) == 10u, "timed note layout");
 /* Sound offsets: semitones, decay and voice character; zero preserves the factory kit. */
@@ -410,7 +411,9 @@ static void step_set_cond(step_t *s, uint32_t c)
 }
 static int step_acc_valid(const step_t *s) { return s->hit ? !(s->acc & ~s->hit) : s->time != ST_REST || !s->acc; }
 #define MOTION_MAX 64u
-/* Four tracks x64 steps fit one byte. Values retain their signed parameter range. */
+/* Four tracks x64 steps fit one byte. Values retain their signed parameter range. Andamento (8 tracks): motion
+ * records on tracks 1..4 only until its own project chunk (MOTN, format step 3) gives the place more bits */
+#define MOTION_TRACKS 4u
 typedef struct { uint8_t place, param; int16_t value; } motion_event_t;
 typedef struct { uint8_t count, on, rsv[2]; motion_event_t event[MOTION_MAX]; } motion_store_t;
 _Static_assert(sizeof(motion_store_t) == 260u, "motion disk layout");
@@ -525,6 +528,12 @@ static uint8_t settings_batt_off;   /* MENU BATTERY OFF: the header shows the ba
 static uint8_t settings_mute_q;    /* MENU MUTES: GLO's mute keys while playing land NOW (0), on the next BAR (1) or PHRASE
                                      * (2) (entries.c mute_press; saved: favorites.factory[15][24] bits 6..7) */
 #define TSEL (&trk[song.sel])    /* the selected track */
+/* Andamento: the platform's own outputs besides USB (0: none, as on the FM-1). out_note_hook: every note a track starts
+ * (vel 1..127) or ends (vel 0) as voice.c trk_note_on / trk_note_off see them, its SOUND OFF or not (the CV / gate
+ * pairs: platform/andamento/and_out.c); out_midi_hook: every MIDI OUT message, usb.c midi_out_event's packet (the
+ * board's DIN / TRS, the browser's Web MIDI). Called from the audio ISR */
+static void (*out_note_hook)(const track_t *t, uint32_t note, uint32_t vel);
+static void (*out_midi_hook)(uint32_t pkt);
 
 #include "microtonal.h"
 

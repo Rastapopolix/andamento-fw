@@ -13,7 +13,7 @@ static const char *const TX_N_DIV[] = {"OFF", "/1", "/2", "/3", "/4", "/5", "/6"
                                          "/13", "/14", "/15", "/16"};   /* (every n steps: no unit, "st" read as semitones) */
 static const char *const TX_N_EVERY[] = {"OFF", "1", "2", "4", "8", "16"};
 static const char *const TX_N_FORM[] = {"OFF", "AB", "ABAC", "ABCB", "AABA", "ABCA", "AABC"};
-static const char *const TX_N_FOLLOW[] = {"OFF", "T1", "T2", "T3", "T4"};
+static const char *const TX_N_FOLLOW[] = {"OFF", "T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8"};   /* (Andamento: 8 tracks) */
 static const char *const TX_N_BRMODE[] = {"COIN", "TOGGLE", "LATCH"};
 static const char *const TX_N_LOGIC[] = {"OFF", "AND", "OR", "XOR", "NOT"};
 static const char *const TX_N_COND[] = {"OFF", "1:2", "2:2", "1:4", "2:4", "3:4", "4:4", "1:8", "8:8", "FIRST", "!FIRST"};

@@ -3,7 +3,7 @@
 /* Andamento's project file, format 1 (tessera-notes andamento/PROJECT_FORMAT.md): the music as one block of bytes,
  * for a file PROJECTS/NAME.AND on the card (the board) or a download (the browser). Plain C on the core's and the
  * UI's own calls, so the host tests, the browser and the Daisy run the same code; the card and the files are the
- * platform's (step 2). Included by and_ui.c after the settings' namespaces (and_ext.c, and_master.c, and_texture.c).
+ * platform's (step 2). Included by and_ui.c after the settings' namespaces (and_out.c, and_master.c, and_texture.c).
  * Tessera's .tsp (TSP1, project_tsp.c) is not read here; its step packing is borrowed (project_tsp.c tsp_step_pack,
  * step v2) and its new-project defaults (project.c project_new_blank), since the Daisy build has neither file.
  *
@@ -21,16 +21,18 @@
  *   PRMS            the song's settings as (u16 pid, i16 value) pairs: Tessera's global ones (pid.c, but the
  *                   device's and the actions), the master bus (AM_PID), the texture engine (AT_PID), AS_SEL
  *   TRAK            u8 the track (0..7), then its chunks:
- *     PRMS            the track's settings as pairs. Tracks 1..4: AS_ENGINE and AS_PRESET first, then Tessera's
- *                     track settings (P_*, TX_*), the shared voice stage (AV_PID), then AS_PATTERN; tracks 5..8: and_ext.c's (AE_PID), every
- *                     generator's own three (AE_GPS)
- *     PATN            a pattern (tracks 1..4): u8 index, u8 step format (2), i16 LEN DIV SWING GATE, u8 DIR,
+ *     PRMS            the track's settings as pairs: AS_ENGINE and AS_PRESET first, then Tessera's track settings
+ *                     (P_*, TX_*), the shared voice stage (AV_PID), its outputs (AO_PID: and_out.c), then AS_PATTERN.
+ *                     Before the 8 tracks (2026-11-16) tracks 5..8 were and_ext.c's external tracks and saved their
+ *                     settings as AE_PID pairs (and every generator's own three, AE_GPS): andp_ae maps those
+ *     PATN            a pattern: u8 index, u8 step format (2), i16 LEN DIV SWING GATE, u8 DIR,
  *                     u8 steps n, n steps of ANDP_STEP_BYTES (the rest rests). An empty pattern is not written
  *
  * Reading. A file is checked whole before anything changes (andp_check: the header, every chunk inside its parent,
  * the CRC, each pattern's steps): a cut-off or damaged file is refused and the music stays as it was. Then
  * (andp_load) the transport stops, the music goes back to a new project's (project_new_blank, but every pattern
- * empty; tracks 5..8, the master bus and the texture engine at their defaults), and the file is applied: a chunk or a pid this build doesn't
+ * empty; the outputs, tracks 5..8's start, the master bus and the texture engine at their defaults), and the file is
+ * applied: a chunk or a pid this build doesn't
  * know is skipped (a newer firmware wrote it), a value outside its range is clamped (the range changed), and what the
  * file doesn't hold keeps its default. So a new setting is saved the day it has a pid, with no new chunk.
  *
@@ -54,9 +56,18 @@
 enum { AS_ENGINE, AS_PRESET, AS_PATTERN, AS_SEL, AS_NPRM };   /* (a track's engine by ENGI_* id, its preset, its
                                                                 * pattern playing; the song's selected track 0..7) */
 
+/* Tracks 5..8 before they were the core's (and_ext.c, until 2026-11-16): their settings' pids, AE_PID + AE_*, and each
+ * generator's own three, AE_PID + AE_GPS + (gen - 1) * 3 + k. Read only, mapped onto the core's (andp_ae); never
+ * written again, and never reused (tessera-notes andamento/README.md, Number claims) */
+#define AE_PID 0xE000u
+enum { AE_GEN, AE_P1, AE_P2, AE_P3, AE_SEED, AE_DIV, AE_OCT, AE_GATE, AE_VEL, AE_CHAN, AE_DEPTH, AE_MUTE, AE_NPRM };
+#define AE_GPS 0x10u
+#define AE_GENS 7u                               /* OFF TURING EUCLID MARKOV AWAKE POLY SERIES */
+
 enum { ANDP_OK, ANDP_E_SHORT, ANDP_E_MAGIC, ANDP_E_FORMAT, ANDP_E_CHUNK, ANDP_E_CRC, ANDP_E_DATA, ANDP_E_SPACE };
 
 static char andp_name[ANDP_NAME_MAX + 1u];      /* the music's name (loaded or saved), "" none */
+static uint32_t andp_legacy;                     /* tracks read from and_ext.c's pairs (andp_ae), a bit each */
 
 /* zlib's CRC-32, 4 bits a step (as storage.c's st_crc32, which only the FM-1's flash build has) */
 static uint32_t andp_crc32(const uint8_t *b, uint32_t n)
@@ -334,26 +345,20 @@ static uint32_t andp_save(uint8_t *out, uint32_t max)
         uint32_t tc = andp_begin(&w, ANDP_ID('T', 'R', 'A', 'K'));
         andp_byte(&w, t);
         c = andp_begin(&w, ANDP_ID('P', 'R', 'M', 'S'));
-        if (t < NTRK) {
-            andp_pair(&w, AS_PID + AS_ENGINE, trk[t].eng_req);
-            andp_pair(&w, AS_PID + AS_PRESET, trk[t].preset);
-            for (i = 0; i < pid_count(); i++) {
-                const pid_entry_t *e = pid_at(i);
-                if ((e->flags & PID_F_TRACK) && andp_saved(e, t))
-                    andp_pair(&w, e->pid, andp_core_get(e->pid, t));
-            }
-            for (k = 0; k < VS_NPRM; k++)         /* the shared voice stage (vstage.c) */
-                andp_pair(&w, AV_PID + k, vs_get(t, k));
-            andp_pair(&w, AS_PID + AS_PATTERN, trk[t].pattern);
-        } else {
-            for (k = 0; k < AE_NPRM; k++)
-                if (k < AE_P1 || k > AE_P3)      /* (the pages' view: AE_GPS holds every generator's) */
-                    andp_pair(&w, AE_PID + k, ae_get(k, t - NTRK));
-            for (k = 0; k < 3u * (AE_GENS - 1u); k++)
-                andp_pair(&w, AE_PID + AE_GPS + k, ae_get(AE_GPS + k, t - NTRK));
+        andp_pair(&w, AS_PID + AS_ENGINE, trk[t].eng_req);
+        andp_pair(&w, AS_PID + AS_PRESET, trk[t].preset);
+        for (i = 0; i < pid_count(); i++) {
+            const pid_entry_t *e = pid_at(i);
+            if ((e->flags & PID_F_TRACK) && andp_saved(e, t))
+                andp_pair(&w, e->pid, andp_core_get(e->pid, t));
         }
+        for (k = 0; k < VS_NPRM; k++)             /* the shared voice stage (vstage.c) */
+            andp_pair(&w, AV_PID + k, vs_get(t, k));
+        for (k = 0; k < AO_NPRM; k++)             /* its outputs (and_out.c) */
+            andp_pair(&w, AO_PID + k, ao_get(k, t));
+        andp_pair(&w, AS_PID + AS_PATTERN, trk[t].pattern);
         andp_end(&w, c);
-        for (k = 0; t < NTRK && k < NPAT; k++) {
+        for (k = 0; k < NPAT; k++) {
             const int16_t *tm;
             const step_t *s;
             if (andp_pattern_empty(t, k))
@@ -479,9 +484,9 @@ static int andp_check(const uint8_t *b, uint32_t len)
 }
 
 /* the music back to a new project's, as project.c project_new_blank (which the Daisy build lacks) but with every
- * pattern empty (its demo steps are not a file's): tracks 1..4 their power-on engines and sounds, the song's settings
- * their defaults but the device's (CLOCK TUNE MIDI ROUTE), no cords; tracks 5..8, the master bus and the texture
- * engine at theirs. The transport stops first, every voice let go */
+ * pattern empty (its demo steps are not a file's): the tracks their power-on engines and sounds, the song's settings
+ * their defaults but the device's (CLOCK TUNE MIDI ROUTE), no cords; the outputs and tracks 5..8's start (and_out.c),
+ * the master bus and the texture engine at theirs. The transport stops first, every voice let go */
 static void andp_defaults(void)
 {
     uint32_t i, k;
@@ -491,6 +496,7 @@ static void andp_defaults(void)
     transport_req = 0;
     tessera_stop_all();
     tessera_reset();
+    tune_sel = 0;                                /* (TUNING, the project's: tessera_reset leaves it) */
     fm1_irq_off();
     chain_defaults(&chain_config);
     pattern_init();
@@ -512,13 +518,49 @@ static void andp_defaults(void)
     }
     song.sel = 0;
     cord_defaults();
-    and_ext_init();
+    and_out_defaults();
     for (k = 0; k < AM_NPRM; k++)
         am_set(k, AM_DESC[k].def);
     for (k = 0; k < AT_NPRM; k++)
         at_set(k, AT_DESC[k].def);
     and_select(0);
     andp_name[0] = 0;
+}
+
+/* a pair of tracks 5..8 as and_ext.c saved them (before 2026-11-16) onto the core's settings: the generator, its three,
+ * SEED, DIV, OCT (as TRANSPOSE, at most 2 octaves), GATE, MIDI CHAN, ENERGY DEPTH, MUTE. VEL has no core setting (the
+ * generator's velocity plays as it is). The lines are the core's generators from here, so they play alike, not the
+ * same notes. 1: it was one */
+static int andp_ae(uint32_t pid, int32_t v, uint32_t tr)
+{
+    static const uint8_t MODE[AE_GENS] = {TESS_ENG_OFF, TESS_ENG_TURING, TESS_ENG_EUCLID, TESS_ENG_MARKOV,
+                                          TESS_ENG_AWAKE, TESS_ENG_POLY, TESS_ENG_SERIES};
+    static const uint8_t GP[AE_GENS - 1u][3] = {
+        {TX_TUR_LEN, TX_TUR_PROB, TX_TUR_SPAN}, {TX_EUC_STEPS, TX_EUC_PULSES, TX_EUC_ROT},
+        {TX_MKV_LEAP, TX_MKV_DENS, TX_MKV_SPAN}, {TX_AWK_LENA, TX_AWK_LENB, TX_AWK_PROB},
+        {TX_POL_DIV1, TX_POL_DIV2, TX_POL_SPAN}, {TX_SR_START, TX_SR_INTV, TX_SR_LOOP}};
+    static const uint8_t DIV[6] = {0, 1, 4, 2, 5, 3};   /* (1/4 1/8 1/8T 1/16 1/16T 1/32 as params.c N_DIV) */
+    uint32_t x;
+    if (pid < AE_PID || pid >= AE_PID + AE_GPS + 3u * (AE_GENS - 1u) || (pid >= AE_PID + AE_NPRM && pid < AE_PID + AE_GPS))
+        return 0;
+    x = pid - AE_PID;
+    if (x >= AE_GPS) {
+        x -= AE_GPS;
+        pid_set(PID_TESS(GP[x / 3u][x % 3u]), tr, v);
+        return 1;
+    }
+    switch (x) {
+    case AE_GEN: pid_set(PID_TESS(TX_MODE), tr, MODE[clamp(v, 0, AE_GENS - 1)]); break;
+    case AE_SEED: pid_set(PID_TESS(TX_EV_SEED), tr, 1 + clamp(v, 0, 255) % 128); break;
+    case AE_DIV: trk[tr].p[P_SDIV] = DIV[clamp(v, 0, 5)]; break;
+    case AE_OCT: pid_set(PID_TRACK(P_TRANS), tr, 12 * v); break;
+    case AE_GATE: pid_set(PID_TRACK(P_SGATE), tr, clamp(v, 5, 100) * 127 / 100); break;
+    case AE_CHAN: pid_set(PID_TESS(TX_MIDI_CH), tr, v > 0 ? clamp(v, 1, 16) : (int32_t)TESS_MIDI_OFF); break;
+    case AE_DEPTH: pid_set(PID_TESS(TX_EN_DEPTH), tr, v); break;
+    case AE_MUTE: pid_set(PID_TRACK(P_MUTE), tr, v != 0); break;
+    default: break;                              /* (AE_P1..P3, the pages' view, never saved; AE_VEL: none) */
+    }
+    return 1;
 }
 
 /* one (pid, value) pair of the song's PRMS (tr: AND_TRACKS) or track tr's; unknown pids are skipped */
@@ -531,17 +573,18 @@ static void andp_apply(uint32_t pid, int32_t v, uint32_t tr)
             at_set(pid - AT_PID, v);
         else if (pid == AS_PID + AS_SEL)
             and_select((uint32_t)clamp(v, 0, AND_TRACKS - 1));
-        else if (pid < AE_PID && !andp_glo_kept(pid)) {
+        else if (pid < AND_OWN_PID && !andp_glo_kept(pid)) {
             const pid_entry_t *e = pid_find(pid);
             if (e && !(e->flags & PID_F_TRACK))
                 pid_set(pid, 0, v);              /* (clamped; the device's and the actions refused) */
         }
-    } else if (tr >= NTRK) {
-        if (pid >= AE_PID && (pid < AE_PID + AE_NPRM || (pid >= AE_PID + AE_GPS && pid < AE_PID + AE_GPS + 3u * (AE_GENS - 1u))))
-            ae_set(pid - AE_PID, tr - NTRK, v);
     } else if (pid >= AV_PID && pid < AV_PID + VS_NPRM) {
         vs_set(tr, pid - AV_PID, v);
-    } else if (pid < AE_PID && !andp_per_pattern(pid)) {
+    } else if (pid >= AO_PID && pid < AO_PID + AO_NPRM) {
+        ao_set(pid - AO_PID, tr, v);
+    } else if (andp_ae(pid, v, tr)) {
+        andp_legacy |= 1u << tr;
+    } else if (pid < AND_OWN_PID && !andp_per_pattern(pid)) {
         const pid_entry_t *e = pid_find(pid);
         if (e && (e->flags & PID_F_TRACK))
             pid_set(pid, tr, v);
@@ -556,6 +599,7 @@ static void andp_trak(uint32_t tr, const uint8_t *body, uint32_t n)
     const uint8_t *sb;
     int32_t engine = -1, preset = -1, pattern = 0;
     track_t *t = &trk[tr % NTRK];
+    tr %= NTRK;
     for (sp = 1u; andp_next(body, n, &sp, &sid, &sb, &sn) > 0;)
         for (i = 0; sid == ANDP_ID('P', 'R', 'M', 'S') && i + 4u <= sn; i += 4u) {
             int32_t v = (int16_t)andp_u16(sb + i + 2u);
@@ -565,7 +609,7 @@ static void andp_trak(uint32_t tr, const uint8_t *body, uint32_t n)
             case AS_PID + AS_PATTERN: pattern = v; break;
             }
         }
-    if (tr < NTRK && engine >= 0) {
+    if (engine >= 0) {
         uint32_t e = (uint32_t)engine < NENGINES && ENG_BUILT(engine) ? (uint32_t)engine : ENGI_FALLBACK;
         if (e != t->eng_req)                     /* (an engine this build lacks: the fallback, as TSP1) */
             set_engine_of(t, e);
@@ -575,8 +619,6 @@ static void andp_trak(uint32_t tr, const uint8_t *body, uint32_t n)
     for (sp = 1u; andp_next(body, n, &sp, &sid, &sb, &sn) > 0;)
         for (i = 0; sid == ANDP_ID('P', 'R', 'M', 'S') && i + 4u <= sn; i += 4u)
             andp_apply(andp_u16(sb + i), (int16_t)andp_u16(sb + i + 2u), tr);
-    if (tr >= NTRK)
-        return;
     for (sp = 1u; andp_next(body, n, &sp, &sid, &sb, &sn) > 0;) {
         int use;
         pattern_t *p;
@@ -605,6 +647,7 @@ static int andp_load(const uint8_t *b, uint32_t len)
     if (r != ANDP_OK)
         return r;
     andp_defaults();
+    andp_legacy = 0;
     while (andp_next(b, len, &pos, &id, &body, &n) > 0) {
         if (id == ANDP_ID('N', 'A', 'M', 'E')) {
             memcpy(andp_name, body, n);
@@ -615,5 +658,10 @@ static int andp_load(const uint8_t *b, uint32_t len)
         } else if (id == ANDP_ID('T', 'R', 'A', 'K') && body[0] < AND_TRACKS)
             andp_trak(body[0], body, n);
     }
+    for (i = 0; i < NTRK; i++)                   /* (and_ext.c's tracks played in track 1's scale) */
+        if (andp_legacy >> i & 1u) {
+            trk[i].p[P_ROOT] = trk[0].p[P_ROOT];
+            trk[i].p[P_SCALE] = trk[0].p[P_SCALE];
+        }
     return ANDP_OK;
 }

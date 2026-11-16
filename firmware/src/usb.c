@@ -139,6 +139,8 @@ static int midi_enqueue(uint32_t pkt, uint32_t source)
 
 static void midi_out_event(uint32_t pkt)            /* from the audio ISR */
 {
+    if (out_midi_hook)                              /* (Andamento: the platform's own MIDI outs) */
+        out_midi_hook(pkt);
     if (usb_midi_out_ready() && mo_w - mo_r < MQ) {
         midi_out_q[mo_w % MQ] = pkt;
         RING_PUBLISH();

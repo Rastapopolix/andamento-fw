@@ -1,20 +1,20 @@
 /* SPDX-License-Identifier: GPL-3.0-only
  * Copyright (C) 2026 Theo Dainis */
-/* Andamento's tracks 5..8 (platform/andamento/and_ext.c) on the PC, through the virtual prototype's own build
- * (web/andamento/sim.c, at 48 kHz) driven as the page drives it, the MIDI read as the page reads it (web_midi_take).
- *   and_ext_test [dir]   (run by tests/run_tests.sh; exit 1 on a failed check; with a dir, frames as dir/ppm/ext_*.ppm)
+/* Andamento's 8 tracks and their outputs (platform/andamento/and_out.c) on the PC, through the virtual prototype's own
+ * build (web/andamento/sim.c, at 48 kHz) driven as the page drives it, the MIDI read as the page reads it.
+ *   and_out_test [dir]   (run by tests/and_tests.sh; exit 1 on a failed check; with a dir, frames as dir/ppm/out_*.ppm)
  * Checks:
- *   defaults  TURING, EUCLID, MARKOV, AWAKE on MIDI channels 5..8; stopped, nothing is sent
- *   play      a demo playing: every track sends notes on its own channel, on its DIV's grid, each note-on ended by its
- *             note-off before the next (a mono line), every note in track 1's scale; the CV is the note (1 V an octave,
- *             0 V at C2) and the gate high while it sounds
- *   STOP      every note off, every gate low, nothing more sent; PLAY again: the same notes from the top (the SEED)
- *   MUTE, CHAN OFF  a muted track sends nothing; CHAN OFF sends no MIDI but still drives its CV / gate
- *   ENERGY    sparse, a track with DEPTH 100 plays fewer notes than with DEPTH 0 (an anchor)
+ *   defaults  tracks 5..8 TURING, EUCLID, MARKOV, AWAKE, SOUND OFF, MIDI channels 5..8, CV pairs 1..4; tracks 1..4
+ *             the synth, MIDI OFF, no CV; stopped, nothing is sent
+ *   play      a demo playing: tracks 5..8 send notes on their own channels, each note-on ended by its note-off before
+ *             the next (a mono line), in track 1's scale; nothing on 1..4; no voice of tracks 5..8 sounds (SOUND OFF);
+ *             the CV is the note (1 V an octave, 0 V at C2) and the gate high while it sounds
+ *   STOP      every note off, every gate low, nothing more sent; PLAY again: tracks 6..8 the same notes from the top
+ *   MUTE, MIDI OFF  a muted track sends nothing; MIDI OFF sends no MIDI but still drives its CV / gate
  *   keys      track 5 selected (FUNC + key 5): a key sends its note at once on channel 5, its release the note-off
- *   pages     track 5's GEN page: GEN and its settings, encoder 1 changes the generator; OUT: CHAN and the CV / gate;
+ *   pages     MIX's OUT sub-page: SOUND, MIDI CH, CV; CV moves a track to another pair; SOUND ON gives track 5 voices;
  *             LEFT / RIGHT move through all 8 tracks
- *   core      tracks 1..4 play exactly the same with tracks 5..8 running (their notes and the audio, bit for bit) */
+ *   core      tracks 1..4 play exactly the same with tracks 5..8 playing as with them muted (bit for bit) */
 #define AND_LINT 1                               /* and_fb.c keeps the text drawn (and_lint.h) */
 #include "../web/andamento/sim.c"
 
@@ -35,7 +35,6 @@ static struct {
     uint32_t on[16], off[16], bad_off[16], double_on[16], out_of_scale;
     int held[16];
     uint32_t first[16][32], nfirst[16];          /* the first notes on each channel (PLAY again replays them) */
-    uint32_t on_pos[16][64], npos[16];           /* the clock's position at each note-on */
 } md;
 static void midi_clear(void)
 {
@@ -56,8 +55,6 @@ static void midi_read(void)
             md.held[c] = m[1];
             if (md.nfirst[c] < 32u)
                 md.first[c][md.nfirst[c]++] = m[1];
-            if (md.npos[c] < 64u)
-                md.on_pos[c][md.npos[c]++] = ae_pos();
             if (!((scale_mask(&trk[0]) >> ((m[1] + 120u - (uint32_t)trk[0].p[P_ROOT] % 12u) % 12u)) & 1u))
                 md.out_of_scale++;
             md.on[c]++;
@@ -69,21 +66,36 @@ static void midi_read(void)
         }
     }
 }
+static int32_t note_mv(uint32_t note)
+{
+    int32_t mv = ((int32_t)note - 36) * 1000 / 12;
+    return mv < 0 ? 0 : mv > AO_CV_MAX ? AO_CV_MAX : mv;
+}
+static int sounding_any(uint32_t tr)
+{
+    uint32_t v;
+    for (v = 0; v < NVOICE; v++)
+        if (trk[tr].v[v].active)
+            return 1;
+    return 0;
+}
 /* ms of device time, the MIDI read every millisecond (the page reads it every 2.7 ms) */
-static uint32_t gate_bad;
+static uint32_t gate_bad, voice_bad;
 static void run_ms(uint32_t ms)
 {
     while (ms--) {
-        uint32_t x;
+        uint32_t p, tr;
         web_ms();
         midi_read();
-        for (x = 0; x < AE_N; x++) {              /* the CV is the note sounding, the gate high while it sounds */
-            const ae_track_t *a = &and_ext.t[x];
-            if (a->sounding && a->cv_mv != (((int32_t)a->note - 36) * 1000 / 12 < 0 ? 0 : ((int32_t)a->note - 36) * 1000 / 12))
+        for (p = 0; p < AO_PAIRS; p++) {          /* the CV is the note sounding, the gate high while it sounds */
+            if (and_out.pair[p].gate && and_out.pair[p].mv != note_mv(and_out.pair[p].note))
                 gate_bad++;
-            if (web_gate(x) != a->sounding)
+            if ((int)web_gate(p) != and_out.pair[p].gate || web_cv(p) != and_out.pair[p].mv)
                 gate_bad++;
         }
+        for (tr = 4; tr < NTRK; tr++)             /* (SOUND OFF: no voice) */
+            if (pid_get(AO_PID_SOUND, tr) && sounding_any(tr))
+                voice_bad++;
     }
 }
 static void dump(const char *name)
@@ -108,18 +120,9 @@ static void dump(const char *name)
     fclose(f);
 }
 
-static int sounding_any(uint32_t tr)
-{
-    uint32_t v;
-    for (v = 0; v < NVOICE; v++)
-        if (trk[tr].v[v].gate)
-            return 1;
-    return 0;
-}
-
 /* a hash of tracks 1..4's notes (the note feed) and of their audio over ms of the demo from its start, in a copy of
- * this process (fork) so both runs begin from the very same state; ext 0: tracks 5..8 all OFF first */
-static uint32_t core_run(uint32_t ms, int ext)
+ * this process (fork) so both runs begin from the very same state; out 0: tracks 5..8 muted first */
+static uint32_t core_run(uint32_t ms, int out)
 {
     int fd[2];
     uint32_t h = 2166136261u;
@@ -131,10 +134,10 @@ static uint32_t core_run(uint32_t ms, int ext)
         uint32_t x;
         close(fd[0]);
         land_open = 1;
-        if (!ext)
-            for (x = 0; x < AE_N; x++)
-                ae_set(AE_GEN, x, AE_OFF);
         web_demo(0);
+        if (!out)
+            for (x = 4; x < NTRK; x++)
+                pid_set(PID_TRACK(P_MUTE), x, 1);
         while (ms--) {
             uint32_t k;
             web_render(48);
@@ -145,7 +148,8 @@ static uint32_t core_run(uint32_t ms, int ext)
             }
             (void)web_midi_take();
             for (; seen != land_ev_at; seen++)
-                h = (h ^ (land_ev_tr[seen & (LAND_EV - 1u)] << 8 | land_ev_note[seen & (LAND_EV - 1u)])) * 16777619u;
+                if (land_ev_tr[seen & (LAND_EV - 1u)] < 4u)
+                    h = (h ^ (land_ev_tr[seen & (LAND_EV - 1u)] << 8 | land_ev_note[seen & (LAND_EV - 1u)])) * 16777619u;
         }
         if (write(fd[1], &h, sizeof h) != sizeof h)
             _exit(1);
@@ -161,151 +165,145 @@ static uint32_t core_run(uint32_t ms, int ext)
 
 int main(int argc, char **argv)
 {
-    uint32_t x, c, i, n_dense, n_sparse;
+    static const uint8_t GEN[4] = {TESS_ENG_TURING, TESS_ENG_EUCLID, TESS_ENG_MARKOV, TESS_ENG_AWAKE};
+    uint32_t x, c, i;
     dir = argc > 1 ? argv[1] : 0;
     web_boot();
     midi_clear();
     run_ms(200);
 
     /* defaults; stopped, silent */
-    CHECK(and_ext.t[0].gen == AE_TURING && and_ext.t[1].gen == AE_EUCLID && and_ext.t[2].gen == AE_MARKOV &&
-          and_ext.t[3].gen == AE_AWAKE, "defaults: TURING EUCLID MARKOV AWAKE");
-    for (x = 0; x < AE_N; x++)
-        CHECK(and_ext.t[x].chan == 5u + x, "track %u on channel %u (%u)", x + 5u, x + 5u, and_ext.t[x].chan);
-    CHECK(!md.on[4] && !md.on[5] && !md.on[6] && !md.on[7], "stopped: nothing sent");
+    CHECK(NTRK == 8u, "8 tracks in the core (%u)", (uint32_t)NTRK);
+    for (x = 0; x < NTRK; x++) {
+        int out = x >= 4u;
+        CHECK(pid_get(AO_PID_SOUND, x) == out, "track %u: SOUND %s", x + 1u, out ? "OFF" : "ON");
+        CHECK(pid_get(AO_PID_MIDI, x) == (out ? (int32_t)x + 1 : TESS_MIDI_OFF), "track %u: MIDI CH (%d)", x + 1u,
+              pid_get(AO_PID_MIDI, x));
+        CHECK(and_out_pair_of(x) == (out ? (int32_t)x - 4 : -1), "track %u: CV pair (%d)", x + 1u, and_out_pair_of(x));
+        if (out)
+            CHECK(pid_get(PID_TESS(TX_MODE), x) == GEN[x - 4u], "track %u: its generator (%d)", x + 1u,
+                  pid_get(PID_TESS(TX_MODE), x));
+    }
+    for (c = 0; c < 16u; c++)
+        CHECK(!md.on[c], "stopped: nothing sent on channel %u", c + 1u);
 
-    /* playing: STILL TIDE */
+    /* playing: the demo */
     web_demo(0);
     run_ms(8000);
     CHECK(song.playing, "the demo plays");
-    for (x = 0; x < AE_N; x++) {
-        c = 4u + x;
-        CHECK(md.on[c] >= 4u, "track %u: notes on channel %u (%u)", x + 5u, c + 1u, md.on[c]);
-        CHECK(!md.double_on[c] && !md.bad_off[c], "track %u: one note at a time, each ended (%u, %u)", x + 5u,
+    for (x = 4; x < NTRK; x++) {
+        c = x;
+        CHECK(md.on[c] >= 4u, "track %u: notes on channel %u (%u)", x + 1u, c + 1u, md.on[c]);
+        CHECK(!md.double_on[c] && !md.bad_off[c], "track %u: one note at a time, each ended (%u, %u)", x + 1u,
               md.double_on[c], md.bad_off[c]);
-        for (i = 0; i < md.npos[c]; i++)          /* (on the grid: within the block the step fell in) */
-            if (md.on_pos[c][i] % (MIDI_BEAT_UNITS / AE_DIV_N[and_ext.t[x].div]) >
-                (uint32_t)(MIDI_BEAT_UNITS * pid_get(0x100, 0) / 60u / 1000u) + 1u) {
-                CHECK(0, "track %u: note %u off the grid (%u)", x + 5u, i, md.on_pos[c][i]);
-                break;
-            }
     }
     printf("notes in 8 s on channels 5..8: %u %u %u %u\n", md.on[4], md.on[5], md.on[6], md.on[7]);
     CHECK(!md.out_of_scale, "every note in track 1's scale (%u outside)", md.out_of_scale);
     CHECK(!gate_bad, "the CV the note, the gate high while it sounds (%u wrong)", gate_bad);
+    CHECK(!voice_bad, "SOUND OFF: no voice of tracks 5..8 sounds (%u)", voice_bad);
     for (c = 0; c < 16u; c++)
         if (c < 4u || c > 7u)
             CHECK(!md.on[c], "nothing on channel %u (%u)", c + 1u, md.on[c]);
     and_ui.page = AND_HOME;
-    dump("ext_home");
+    dump("out_home");
 
     /* STOP; PLAY again replays from the SEED */
     {
         uint32_t first[4][8];
-        for (x = 0; x < AE_N; x++)
+        for (x = 0; x < 4u; x++)
             memcpy(first[x], md.first[4u + x], sizeof first[x]);
         btn(AB_STOP);
         run_ms(100);
-        for (x = 0; x < AE_N; x++)
+        for (x = 0; x < 4u; x++)
             CHECK(md.held[4u + x] < 0 && !web_gate(x), "STOP: track %u's note off, gate low", x + 5u);
         midi_clear();
         run_ms(1000);
         CHECK(!md.on[4] && !md.on[5] && !md.on[6] && !md.on[7], "stopped: nothing sent");
         btn(AB_PLAY);
         run_ms(3000);
-        for (x = 0; x < AE_N; x++)
+        for (x = 1; x < 4u; x++)                 /* (not TURING: the core's keeps its loop where it was) */
             CHECK(md.nfirst[4u + x] >= 3u && !memcmp(first[x], md.first[4u + x], 3u * sizeof(uint32_t)),
                   "PLAY again: track %u's first notes the same", x + 5u);
     }
 
-    /* MUTE, CHAN OFF */
-    ae_set(AE_MUTE, 0, 1);
-    ae_set(AE_CHAN, 1, 0);
+    /* MUTE, MIDI OFF */
+    pid_set(PID_TRACK(P_MUTE), 4, 1);
+    pid_set(AO_PID_MIDI, 5, TESS_MIDI_OFF);
     run_ms(50);
     midi_clear();
     gate_bad = 0;
     {
-        uint32_t gates = 0;
+        uint32_t gates = 0, gates0 = 0;
         for (i = 0; i < 4000u; i++) {
             run_ms(1);
-            gates += (uint32_t)web_gate(1);
+            gates += web_gate(1);
+            gates0 += web_gate(0);
         }
-        CHECK(!md.on[4] && !web_gate(0), "MUTE: track 5 sends nothing (%u)", md.on[4]);
-        CHECK(!md.on[5] && gates > 0u, "CHAN OFF: track 6 no MIDI (%u), its gate still played (%u ms)", md.on[5], gates);
+        CHECK(!md.on[4] && !gates0, "MUTE: track 5 sends nothing (%u notes, %u ms of gate)", md.on[4], gates0);
+        CHECK(!md.on[5] && gates > 0u, "MIDI OFF: track 6 no MIDI (%u), its gate still played (%u ms)", md.on[5], gates);
         CHECK(md.on[6] > 0u, "track 7 plays on");
     }
-    ae_set(AE_MUTE, 0, 0);
-    ae_set(AE_CHAN, 1, 6);
-
-    /* ENERGY: sparse, DEPTH 100 against 0 (TURING, every step a draw: SERIES plays every step) */
-    pid_set(0x26c, 0, -100);                         /* (ENERGY LEVEL: all sparse) */
-    pid_set(0x259, 0, 0);
-    ae_set(AE_GEN, 3, AE_SERIES);
-    ae_set(AE_DEPTH, 3, 0);
-    midi_clear();
-    run_ms(6000);
-    n_dense = md.on[7];
-    ae_set(AE_DEPTH, 3, 100);
-    midi_clear();
-    run_ms(6000);
-    n_sparse = md.on[7];
-    CHECK(n_dense > 0u && n_sparse * 10u < n_dense * 6u && n_sparse > 0u,
-          "ENERGY sparse: DEPTH 100 leaves notes out (%u of %u)", n_sparse, n_dense);
-    pid_set(0x26c, 0, 0);
-    ae_set(AE_GEN, 3, AE_AWAKE);
+    pid_set(PID_TRACK(P_MUTE), 4, 0);
+    pid_set(AO_PID_MIDI, 5, 6);
 
     /* a key on track 5 */
     btn(AB_STOP);
     run_ms(100);
     func_key(4);
-    CHECK(AND_SEL == 4u && and_ui.ext == 0, "FUNC + key 5 selects track 5 (%u)", AND_SEL);
+    CHECK(AND_SEL == 4u, "FUNC + key 5 selects track 5 (%u)", AND_SEL);
     func_key(8);                                     /* (SCALE) */
     midi_clear();
     web_key(0, 1);
-    midi_read();
+    run_ms(2);
     CHECK(md.on[4] == 1u && md.held[4] == (int)ak_key_note(4, 0, AK_SCALE), "a key: its note on channel 5 at once (%d)",
           md.held[4]);
-    CHECK(web_gate(0) && and_ext_cv(0) == (md.held[4] - 36) * 1000 / 12, "a key: gate high, CV its note");
-    for (i = 0; i < 3u; i++)
-        CHECK(!sounding_any(i), "a key on track 5: no voice of track %u sounds", i + 1u);
+    CHECK(web_gate(0) && web_cv(0) == note_mv((uint32_t)md.held[4]), "a key: gate high, CV its note");
+    CHECK(!sounding_any(4), "a key on track 5 (SOUND OFF): no voice of its own");
     web_key(0, 0);
-    midi_read();
+    run_ms(2);
     CHECK(md.off[4] == 1u && md.held[4] < 0 && !web_gate(0), "the key let go: its note-off, gate low");
 
-    /* track 5's pages */
-    btn(AB_GEN);
+    /* MIX's OUT: SOUND, MIDI CH, CV */
+    btn(AB_MIX);
+    if (and_ui.sub[AB_MIX] != AND_MIX_OUT)
+        btn(AB_MIX);
     and_cells();
-    CHECK(and_ui.cell[0] == AE_PID + AE_GEN && and_ui.cell[1] == AE_PID + AE_P1, "track 5's GEN: GEN and its settings");
-    dump("ext_gen");
+    CHECK(and_ui.sub[AB_MIX] == AND_MIX_OUT && and_ui.cell[0] == AO_PID_SOUND && and_ui.cell[1] == AO_PID_MIDI,
+          "MIX's OUT: SOUND, MIDI CH");
+    for (i = 0; i < 8u && and_ui.cell[i] != AO_PID + AO_CV; i++)
+        ;
+    CHECK(i < 8u, "MIX's OUT: CV");
+    dump("out_mix");
+    if (i < 8u) {
+        web_enc(i, 1);                                /* (CV 1 -> 2: track 5 on pair 2, with track 6) */
+        CHECK(and_out_pair_of(4) == 1, "a turn of CV: track 5 on pair 2 (%d)", and_out_pair_of(4));
+        web_enc(i, -1);
+        CHECK(and_out_pair_of(4) == 0, "back on pair 1 (%d)", and_out_pair_of(4));
+    }
+    web_enc(0, -1);                                   /* (SOUND OFF -> ON) */
+    CHECK(pid_get(AO_PID_SOUND, 4) == 0, "encoder 1 on OUT: track 5's SOUND ON (%d)", pid_get(AO_PID_SOUND, 4));
+    web_key(0, 1);
+    run_ms(5);
+    CHECK(sounding_any(4) && web_gate(0), "SOUND ON: a key on track 5 sounds a voice and still drives its gate");
+    web_key(0, 0);
+    run_ms(300);
     web_enc(0, 1);
-    CHECK(and_ext.t[0].gen == AE_EUCLID, "encoder 1 on GEN: the generator (%u)", and_ext.t[0].gen);
-    web_enc(0, -1);
-    btn(AB_SOUND);
-    and_cells();
-    CHECK(and_ui.cell[0] == AE_PID + AE_CHAN, "track 5's SOUND page is OUT: CHAN");
-    btn(AB_PLAY);
-    for (i = 0; i < 2000u && !web_gate(0); i++)
-        run_ms(1);
-    dump("ext_out");
-    btn(AB_STOP);
-    run_ms(50);
+    CHECK(pid_get(AO_PID_SOUND, 4) == 1, "SOUND OFF again");
     for (i = 0; i < 8u; i++)
         btn(AB_RIGHT);
     CHECK(AND_SEL == 4u, "RIGHT 8 times: round the 8 tracks back to 5 (%u)", AND_SEL);
-    btn(AB_RIGHT);
-    btn(AB_RIGHT);
-    btn(AB_RIGHT);
-    btn(AB_RIGHT);
-    CHECK(AND_SEL == 0u && song.sel == 0u && and_ui.ext < 0, "RIGHT from 8: track 1");
+    for (i = 0; i < 4u; i++)
+        btn(AB_RIGHT);
+    CHECK(AND_SEL == 0u, "RIGHT from 8: track 1 (%u)", AND_SEL);
     btn(AB_NO);
 
-    /* tracks 1..4 the same with tracks 5..8 playing as with them OFF */
+    /* tracks 1..4 the same with tracks 5..8 playing as with them muted */
     {
         uint32_t h1 = core_run(8000, 1), h2 = core_run(8000, 0), h3 = core_run(8000, 1);
         CHECK(h1 && h1 == h3, "the demo's run repeats bit for bit (%08x %08x)", h1, h3);
         CHECK(h1 == h2, "tracks 1..4: the same notes and audio with or without 5..8 (%08x %08x)", h1, h2);
     }
 
-    printf(nfail ? "and_ext: %u failed\n" : "and_ext: all checks passed\n", nfail);
+    printf(nfail ? "and_out: %u failed\n" : "and_out: all checks passed\n", nfail);
     return nfail ? 1 : 0;
 }

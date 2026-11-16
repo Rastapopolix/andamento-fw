@@ -577,6 +577,8 @@ static void trk_note_on(track_t *t,uint32_t note,uint32_t vel)
     vel = cord_vel((uint32_t)(t - trk), vel);          /* (VELO as its mods move it: cord.c) */
     land_note(t, note, vel);
     midi_out_on(t, note, vel);
+    if (out_note_hook && !t->p[P_MUTE])               /* (Andamento: the CV / gate pairs) */
+        out_note_hook(t, note, vel ? vel : 1u);
     if (!tess_sound_off(t))
         trk_note_on_work(t,note,vel);
 }
@@ -585,6 +587,8 @@ static void trk_note_off(track_t *t, uint32_t note)
 {
     uint32_t i, k = 0, mode = trk_vmode(t);
     midi_out_off(t, note);
+    if (out_note_hook)
+        out_note_hook(t, note, 0);
     for (i = 0; i < t->xp_n; i++)                       /* not sounding yet (engine switch): forget it */
         if (t->xp_note[i] != note) {
             t->xp_note[k] = t->xp_note[i];

@@ -65,14 +65,14 @@ static int edits_and_store(void)
     drum_hit_edit(2,7);uint32_t i=drum_hit_selected();recorded_note_t hit=recording[i];
     bad+=check("grid pitch edit retains the kick, snare and their velocities",i<RECORD_MAX && hit.note==36 && hit.pitch==7 && !drum_patch[0].c[D9_BD][0] && TSEL->step[3].hit==3);
     step_history_end();step_history_finish();drum_hit_edit(3,-8);step_history_end();step_history_finish();
-    bad+=check("hit length is an independent half step",recording[i].length && recording[i].duration*(1u<<(recording[i].owner>>5))==RECORD_UNIT/2);
-    bad+=check("hit undo restores pitch and natural length",step_history_apply(0) && recording[i].pitch==7 && !recording[i].length);
-    bad+=check("hit redo restores the length override",step_history_apply(1) && recording[i].length);
+    bad+=check("hit length is an independent half step",(recording[i].length&1u) && recording[i].duration*(1u<<(recording[i].length >> 1))==RECORD_UNIT/2);
+    bad+=check("hit undo restores pitch and natural length",step_history_apply(0) && recording[i].pitch==7 && !(recording[i].length&1u));
+    bad+=check("hit redo restores the length override",step_history_apply(1) && (recording[i].length&1u));
     settings_preview=1;notes_preview();audition_tick(1);
     bad+=check("hit preview retains edited pitch and duration",TSEL->v[0].note==36 && TSEL->v[0].s[4]==7 && TSEL->v[0].s[5]);audition_stop();settings_preview=0;
     drum_hit_delete();step_history_end();step_history_finish();
     bad+=check("deleting one edited hit retains its neighboring manual snare",!recording[i].vel && TSEL->step[3].hit==2);
-    bad+=check("hit deletion undo restores the original event and neighbors",step_history_apply(0) && recording[i].pitch==7 && recording[i].length && TSEL->step[3].hit==3);
+    bad+=check("hit deletion undo restores the original event and neighbors",step_history_apply(0) && recording[i].pitch==7 && (recording[i].length&1u) && TSEL->step[3].hit==3);
     recording_restore_note(TSEL,1,(recorded_note_t){32000,32768,36,80,(uint8_t)recording_owner(TSEL),3,-4,1});
     drum_hit_jog(1);uint32_t second=drum_hit_selected();drum_hit_edit(2,1);
     bad+=check("SELECT can edit a repeated hit without changing the first hit",second==1 && recording[1].pitch==-3 && recording[i].pitch==7);
@@ -80,7 +80,7 @@ static int edits_and_store(void)
     drum_patch[0].c[D9_BD][0]=5;drum_patch[0].c[D9_LT][3]=19;
     project_capture(&proj_scratch);static uint8_t wire[TSP_MAX];static project_t decoded;
     uint32_t wn=tsp_pack(wire,&proj_scratch,0);int ok=wn && tsp_valid(wire,wn);decoded=proj_scratch;
-    bad+=check("project roundtrip keeps sound settings, instrument, pitch and length",ok && decoded.drum[0].c[D9_BD][0]==5 && decoded.drum[0].c[D9_LT][3]==19 && decoded.recording[0].note==36 && decoded.recording[0].pitch==7 && decoded.recording[0].length);
+    bad+=check("project roundtrip keeps sound settings, instrument, pitch and length",ok && decoded.drum[0].c[D9_BD][0]==5 && decoded.drum[0].c[D9_LT][3]==19 && decoded.recording[0].note==36 && decoded.recording[0].pitch==7 && (decoded.recording[0].length&1u));
     bad+=check("the record fits a project copy and reads back",TSP_MAX<=38368u && tsp_pack(proj_wire_u.raw,&proj_scratch,1) && tsp_valid(proj_wire_u.raw,tsp_len(proj_wire_u.raw)));
     TSEL->engine=ENGI_DRUM;TSEL->eng_req=ENGI_DRUM;song.playing=0;
     bad+=check("general drum preset stores its own sound controls",up_store(0,"OWN 909")==3 && (memset(drum_patch,0,sizeof drum_patch),!up_load(0)) && drum_patch[0].c[D9_BD][0]==5 && drum_patch[0].c[D9_LT][3]==19);
@@ -114,7 +114,7 @@ static int capacity_and_controls(void)
     for(uint32_t t=0;t<NTRK;t++)for(uint32_t i=0;i<16;i++){int8_t *c=proj_scratch.drum[t].c[i];c[0]=(int8_t)((i+t)%2?24:-24);c[1]=(int8_t)((i+t)%2?63:-64);c[2]=-c[1]-1;c[3]=(int8_t)(i%2?127:0);}
     static uint8_t wire[TSP_MAX];static project_t decoded;
     uint32_t wn=tsp_pack(wire,&proj_scratch,0);int ok=wn && tsp_valid(wire,wn);decoded=proj_scratch;uint32_t at=0;
-    if(ok)for(uint32_t owner=0;owner<32;owner++)for(uint32_t i=0;i<RECORD_MAX;i++)if((proj_scratch.recording[i].owner&31u)==owner)ok&=!memcmp(&decoded.recording[at++],&proj_scratch.recording[i],sizeof(recorded_note_t));
+    if(ok)for(uint32_t owner=0;owner<32;owner++)for(uint32_t i=0;i<RECORD_MAX;i++)if((proj_scratch.recording[i].owner & 63u)==owner)ok&=!memcmp(&decoded.recording[at++],&proj_scratch.recording[i],sizeof(recorded_note_t));
     bad+=check("all 1024 hits retain full timing, instrument, velocity, owner, pitch and length",ok && at==RECORD_MAX && !memcmp(decoded.drum,proj_scratch.drum,sizeof decoded.drum));
     memset(proj_scratch.recording,0,sizeof proj_scratch.recording);
     for(uint32_t i=0;i<RECORD_MAX;i++)proj_scratch.recording[i]=(recorded_note_t){0,65535,36,127,255,63,24,1};

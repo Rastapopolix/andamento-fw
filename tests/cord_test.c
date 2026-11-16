@@ -62,9 +62,9 @@ static int behaviour(void)
     check("none set: nothing to do, and mod_begin stays off for a track without MOD slots",
           cord_count() == 0 && !mod_begin(&trk[1]));
     c = C(CS_OFF, 0, CD_PAN, 1, 0, 50);
-    check("refused: past CORD_LIVE, an unknown destination, an amount past 100 %, a track past 4",
+    check("refused: past CORD_LIVE, an unknown destination, an amount past 100 %, a track past NTRK",
           !cord_set(CORD_LIVE, &c) && !(c.dst = CD_N, cord_set(0, &c)) && !(c = C(CS_LFO, 0, CD_PAN, 1, 101, 0), cord_set(0, &c)) &&
-          !(c = C(CS_LFO, 4, CD_PAN, 1, 50, 0), cord_set(0, &c)) && cord_count() == 0);
+          !(c = C(CS_LFO, NTRK, CD_PAN, 1, 50, 0), cord_set(0, &c)) && cord_count() == 0);
 
     /* a parameter, in place for the block, back after it */
     c = C(CS_OFF, 0, CD_PAN, 1, 0, 50);
@@ -945,15 +945,15 @@ static int fx_dests(void)
     fresh_tracks();
     song.g[G_FXMODE] = 1;
     song.g[G_MFX3TYPE] = FX_ROOM; song.g[G_MFX3MIX] = 127; song.g[G_FXRETURN] = 100;
-    trk[3].p[P_FXSEND3] = 0;
-    c = C(CS_OFF, 0, CD_FX_SEND3, 3, 0, 100);
+    trk[NTRK - 1u].p[P_FXSEND3] = 0;                   /* (the last track: fx_extra_gain is the last part's) */
+    c = C(CS_OFF, 0, CD_FX_SEND3, NTRK - 1u, 0, 100);
     cord_set(0, &c);
     for (i = 0; i < 4u; i++) {
         int32_t o[2 * CTL];
         mix_block(o, CTL);
     }
-    check("SEND 3 +100 % on track 4 (its SEND 3 at 0, FX MODE SPLIT): sent at full for the block, 0 stored",
-          fx_extra_gain[1] == 65536u && trk[3].p[P_FXSEND3] == 0);
+    check("SEND 3 +100 % on the last track (its SEND 3 at 0, FX MODE SPLIT): sent at full for the block, 0 stored",
+          fx_extra_gain[1] == 65536u && trk[NTRK - 1u].p[P_FXSEND3] == 0);
 
     /* the send effects: for every track, the cord's track kept 0 */
     fresh_tracks();

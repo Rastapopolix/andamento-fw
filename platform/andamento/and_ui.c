@@ -16,22 +16,25 @@
  *                    (and_home.c); Andamento starts here, NO comes back here from any page
  *   page button      that page; pressed again, its next sub-page (also UP / DOWN); FX's 2nd sub-page is the
  *                    master bus, tilt EQ then compressor (and_master.c), song-wide
- *   LEFT / RIGHT     the selected track, 1..8; FUNC + one of the first keys picks a track directly. Tracks 5..8 are
- *                    the external ones (and_ext.c): GEN their generator and clock, SOUND their outputs (OUT)
+ *   LEFT / RIGHT     the selected track, 1..8; FUNC + one of the first keys picks a track directly. Every track is
+ *                    one of the core's (NTRK 8, 2026-11-16); MIX's OUT says where its notes go: its SOUND, a MIDI
+ *                    channel, a CV / gate pair (and_out.c). Tracks 5..8 start as generator lines out of MIDI and CV
  *   encoder 1..8     the cell's setting; pushed, back to its default (HOME: tracks 1..8's ENERGY DEPTH)
  *   ENERGY           ENERGY LEVEL on every page
- *   DATA             the selected track's LEVEL (tracks 5..8: VEL); pushed and turned, the page's sub-pages
+ *   DATA             the selected track's LEVEL; pushed and turned, the page's sub-pages
  *   keys             SCALE, CHROM, STEP or MUTE (FUNC + key 9..12), and their RGB lights: and_keys.c
  *   FUNC + UP / DOWN the keys' octave, or STEP's 16 steps shown
  *   PLAY / STOP      transport (PLAY while playing restarts) */
 
 #define AND_NENC 8
-#define AND_TRACKS 8                             /* Andamento's tracks: Tessera's NTRK (1..4) and the external 5..8 */
+#define AND_TRACKS NTRK                          /* Andamento's tracks: the core's 8 */
 
 enum { AB_GEN, AB_SOUND, AB_MOD, AB_FX, AB_PIECE, AB_MIX, AB_FUNC, AB_NO, AB_YES, AB_UP, AB_DOWN, AB_LEFT, AB_RIGHT,
        AB_REC, AB_PLAY, AB_STOP, AB_COUNT };
 
 #define AND_HOME 6                               /* the page after the 6 buttons' (and_home.c) */
+#define AND_OWN_PID 0xE000u                      /* Andamento's own settings' namespaces from here (AM_, AT_, AV_, AO_ ..;
+                                                  * pid.c's below, and_pages.c's views AP_ AN_ at 0xD000) */
 
 static struct {
     uint8_t page, sub[6], held[AB_COUNT];
@@ -40,21 +43,15 @@ static struct {
     uint32_t hot_ms, say_ms;
     uint16_t hot_pid;
     const char *say;                             /* a word for the header (a mode, the octave), until say_ms + 1200 */
-    int8_t ext;                                  /* an external track selected (0..3: Andamento's 5..8), else -1:
-                                                  * song.sel's, one of Tessera's (the core never sees past NTRK) */
     uint8_t data_down, data_turned;              /* DATA held; turned while held (so letting go is not a click) */
-} and_ui = {.page = AND_HOME, .hot = -1, .ext = -1};
+} and_ui = {.page = AND_HOME, .hot = -1};
 
-/* the track selected, 0..7 (5..8 external: and_ext.c), and selecting one */
-#define AND_SEL ((uint32_t)(and_ui.ext >= 0 ? NTRK + (uint32_t)and_ui.ext : song.sel))
+/* the track selected, 0..7, and selecting one */
+#define AND_SEL ((uint32_t)song.sel)
 static void and_select(uint32_t tr)
 {
-    if (tr < NTRK) {
+    if (tr < NTRK)
         song.sel = (uint8_t)tr;
-        and_ui.ext = -1;
-    } else if (tr < AND_TRACKS) {
-        and_ui.ext = (int8_t)(tr - NTRK);
-    }
 }
 
 static void and_ui_say(const char *s)
@@ -69,20 +66,21 @@ static void and_ui_say(const char *s)
     and_ui.hot_ms = 0;
 }
 
-#include "and_ext.c"                             /* tracks 5..8: generators out to MIDI and CV / gate */
+#include "and_out.c"                             /* each track's outputs: SOUND, MIDI, CV / gate */
 #include "and_master.c"                           /* the master bus: tilt EQ then compressor, FX page's 2nd sub-page */
 #include "and_texture.c"                          /* the texture engine: a granular cloud, FX page's 3rd sub-page */
 #define AM_C(x) (AM_PID + (x))
 #define AT_C(x) (AT_PID + (x))
 #define AV_PID 0xE400u                            /* a track's shared voice stage (firmware/src/vstage.c): AV_PID + VS_* */
 #define AV_C(x) (AV_PID + (x))
+#define AO_C(x) (AO_PID + (x))
 #include "and_pages.c"                            /* SOUND, MOD, FX from Tessera's page table, Monomachine-style */
 #include "and_project.c"                          /* the project file (format 1: the container, settings, patterns) */
 
-/* a setting of track tr (0..7): Tessera's (pid.c), an external track's (AE_PID + AE_*), or one of the song-wide
- * modules (AM_PID + AM_*, the master bus; AT_PID + AT_*, the texture engine: tr does not matter, each is the
- * same for every track), or a synth track's shared voice stage (AV_PID + VS_*: firmware/src/vstage.c) */
-static int and_is_ext(uint32_t pid, uint32_t tr) { return tr >= NTRK && pid >= AE_PID && pid < AE_PID + AE_NPRM; }
+/* a setting of track tr (0..7): Tessera's (pid.c), a track's outputs (AO_PID + AO_*: and_out.c), or one of the
+ * song-wide modules (AM_PID + AM_*, the master bus; AT_PID + AT_*, the texture engine: tr does not matter, each is the
+ * same for every track), or a track's shared voice stage (AV_PID + VS_*: firmware/src/vstage.c) */
+static int and_is_out(uint32_t pid) { return pid >= AO_PID && pid < AO_PID + AO_NPRM; }
 static int and_is_master(uint32_t pid) { return pid >= AM_PID && pid < AM_PID + AM_NPRM; }
 static int and_is_texture(uint32_t pid) { return pid >= AT_PID && pid < AT_PID + AT_NPRM; }
 static int and_is_vstage(uint32_t pid, uint32_t tr) { return tr < NTRK && pid >= AV_PID && pid < AV_PID + VS_NPRM; }
@@ -99,7 +97,7 @@ static const param_desc_t *and_desc(uint32_t pid, uint32_t tr)
         return at_desc(pid - AT_PID);
     if (and_is_vstage(pid, tr))
         return vs_desc(pid - AV_PID);
-    return and_is_ext(pid, tr) ? ae_desc(pid - AE_PID, tr - NTRK) : pid >= AE_PID ? 0 : pid_desc(pid, tr < NTRK ? tr : 0);
+    return and_is_out(pid) ? ao_desc(pid - AO_PID) : pid >= AND_OWN_PID ? 0 : pid_desc(pid, tr < NTRK ? tr : 0);
 }
 static int32_t and_get(uint32_t pid, uint32_t tr)
 {
@@ -113,7 +111,7 @@ static int32_t and_get(uint32_t pid, uint32_t tr)
         return at_get(pid - AT_PID);
     if (and_is_vstage(pid, tr))
         return vs_get(tr, pid - AV_PID);
-    return and_is_ext(pid, tr) ? ae_get(pid - AE_PID, tr - NTRK) : pid >= AE_PID ? 0 : pid_get(pid, tr < NTRK ? tr : 0);
+    return and_is_out(pid) ? ao_get(pid - AO_PID, tr) : pid >= AND_OWN_PID ? 0 : pid_get(pid, tr < NTRK ? tr : 0);
 }
 static void and_set(uint32_t pid, uint32_t tr, int32_t v)
 {
@@ -129,9 +127,9 @@ static void and_set(uint32_t pid, uint32_t tr, int32_t v)
         at_set(pid - AT_PID, v);
     else if (and_is_vstage(pid, tr))
         vs_set(tr, pid - AV_PID, v);
-    else if (and_is_ext(pid, tr))
-        ae_set(pid - AE_PID, tr - NTRK, v);
-    else if (pid < AE_PID)
+    else if (and_is_out(pid))
+        ao_set(pid - AO_PID, tr, v);
+    else if (pid < AND_OWN_PID)
         pid_set(pid, tr < NTRK ? tr : 0, v);
 }
 static const char *and_name(uint32_t pid, uint32_t tr)   /* the setting's full name (the header, when turned) */
@@ -147,30 +145,22 @@ static const char *and_name(uint32_t pid, uint32_t tr)   /* the setting's full n
         return at_desc(pid - AT_PID)->label;
     if (and_is_vstage(pid, tr))
         return VS_NAME[pid - AV_PID];
-    if (and_is_ext(pid, tr))
-        return ae_desc(pid - AE_PID, tr - NTRK)->label;
-    return pid < AE_PID && (e = pid_find(pid)) ? e->name : "";
+    if (and_is_out(pid))
+        return pid == AO_C(AO_CV) ? "CV PAIR" : "";
+    return pid < AND_OWN_PID && (e = pid_find(pid)) ? e->name : "";
 }
 /* a track's generator, by name */
 static const char *and_gen_name(uint32_t tr)
 {
     const param_desc_t *m;
     int32_t mode;
-    if (tr >= NTRK)
-        return AE_GEN_NAME[and_ext.t[(tr - NTRK) % AE_N].gen];
     m = pid_desc(0x200u, tr);
     mode = pid_get(0x200u, tr);
     return m && m->names ? m->names[mode - m->min] : "";
 }
-/* a track muted (MIX's MUTE, or an external track's) */
-static int and_muted(uint32_t tr) { return tr >= NTRK ? and_ext.t[(tr - NTRK) % AE_N].mute : pid_get(0x028, tr) != 0; }
-static void and_mute(uint32_t tr, int on)
-{
-    if (tr >= NTRK)
-        ae_set(AE_MUTE, tr - NTRK, on);
-    else
-        pid_set(0x028, tr, on);
-}
+/* a track muted (MIX's MUTE) */
+static int and_muted(uint32_t tr) { return pid_get(0x028, tr) != 0; }
+static void and_mute(uint32_t tr, int on) { pid_set(0x028, tr, on); }
 
 #include "and_keys.c"                            /* the 16 keys and their lights */
 #include "and_home.c"                            /* HOME: the piece, its ENERGY arc, the 8 tracks */
@@ -207,26 +197,10 @@ static void and_gen_cells(uint16_t *c)
         c[n++] = k < 3u ? FILL[k] : PID_NONE;
 }
 
-/* an external track's pages: GEN its generator and the clock, SOUND its outputs (OUT), PIECE as track 1's (the song's),
- * MIX its outputs and the song's tempo and scale; MOD and FX nothing (no voice of its own) */
-#define AE_C(x) (AE_PID + (x))
-static const uint16_t AND_EXT_CELLS[6][AND_NENC] = {
-    {AE_C(AE_GEN), AE_C(AE_P1), AE_C(AE_P2), AE_C(AE_P3), AE_C(AE_SEED), AE_C(AE_DIV), AE_C(AE_OCT), AE_C(AE_GATE)},
-    {AE_C(AE_CHAN), AE_C(AE_VEL), AE_C(AE_GATE), AE_C(AE_OCT), AE_C(AE_DEPTH), AE_C(AE_MUTE), PID_NONE, PID_NONE},
-    {PID_NONE, PID_NONE, PID_NONE, PID_NONE, PID_NONE, PID_NONE, PID_NONE, PID_NONE},
-    {AM_C(AM_TILT), AM_C(AM_THRESH), AM_C(AM_RATIO), AM_C(AM_ATTACK), AM_C(AM_RELEASE), AM_C(AM_MAKEUP),
-     AM_C(AM_MIX), PID_NONE},                       /* song-wide: the same master bus as an internal track's FX2 */
-    {0x280, 0x281, 0x282, 0x284, 0x259, 0x25a, 0x27b, 0x27d},
-    {AE_C(AE_CHAN), AE_C(AE_VEL), AE_C(AE_MUTE), 0x100, 0x101, 0x019, 0x01a, AE_C(AE_DEPTH)},
-};
-static const char *const AND_EXT_PAGE[6] = {"GEN", "OUT", "MOD", "FX", "PIECE", "MIX"};
-
-/* page p's sub-pages now (an internal track: and_pages.c's map, which follows the engine; an external track: one) */
+/* page p's sub-pages now (and_pages.c's map, which follows the engine) */
 static uint32_t and_nsub(uint32_t p)
 {
     if (p >= 6u)
-        return 1;
-    if (and_ui.ext >= 0)
         return 1;
     and_map(p);
     return and_nsubs ? and_nsubs : 1u;
@@ -238,15 +212,6 @@ static void and_cells(void)
     if (p >= 6u) {                               /* (HOME: no grid) */
         for (i = 0; i < AND_NENC; i++)
             and_ui.cell[i] = PID_NONE;
-        return;
-    }
-    if (and_ui.ext >= 0) {                       /* (an external track: one sub-page each) */
-        for (i = 0; i < AND_NENC; i++)
-            and_ui.cell[i] = AND_EXT_CELLS[p][i];
-        /* GEN's and OUT's cells 1..3 are the generator's own: nothing to show with it OFF. FX is the master bus
-         * (and_master.c), the same whatever the generator is doing, so it is left alone. */
-        if (p != AB_FX && and_ext.t[and_ui.ext % AE_N].gen == AE_OFF)
-            and_ui.cell[1] = and_ui.cell[2] = and_ui.cell[3] = PID_NONE;
         return;
     }
     n = and_nsub(p);                             /* (and_map: and_subs; an engine changed may leave fewer) */
@@ -273,7 +238,7 @@ static void and_turn(uint32_t pid, int32_t n)
         return;
     and_set(pid, AND_SEL, and_get(pid, AND_SEL) + n);
     if (pid == P_SCALE || pid == P_ROOT)         /* (as the FM-1's knobs: one scale for the song) */
-        scale_share(&trk[AND_SEL < NTRK ? AND_SEL : 0u]);
+        scale_share(&trk[AND_SEL]);
     and_ui.hot_pid = (uint16_t)pid;
     and_ui.hot_ms = fm1_ms | 1u;                 /* (0: nothing turned yet) */
     and_ui.say_ms = 0;
@@ -316,8 +281,8 @@ static void and_enc_push(uint32_t i)
         and_keys.energy_ms = fm1_ms | 1u;
 }
 
-/* the DATA encoder, beside the page screen (pushable). Turned: the selected track's level (LEVEL, as on AMP and MIX;
- * tracks 5..8 have no voice, so their MIDI velocity, VEL). Pushed and turned: the page's sub-pages, as its tabs show
+/* the DATA encoder, beside the page screen (pushable). Turned: the selected track's level (LEVEL, as on AMP and MIX).
+ * Pushed and turned: the page's sub-pages, as its tabs show
  * them (FM6's ten SOUND tabs without pressing SOUND ten times). A push without a turn does nothing yet: it is the
  * YES of the lists to come (engine, preset, project). */
 static void and_data(int32_t n)
@@ -336,7 +301,7 @@ static void and_data(int32_t n)
         and_ui.hot_ms = 0;
         return;
     }
-    pid = AND_SEL < NTRK ? PID_TRACK(P_LEVEL) : AE_C(AE_VEL);
+    pid = PID_TRACK(P_LEVEL);
     and_turn(pid, n);
     and_ui.hot = -1;
     for (i = 0; i < AND_NENC; i++)               /* (on AMP or MIX: its own cell lights as if its encoder turned) */
@@ -577,18 +542,18 @@ static void and_draw_dials(uint32_t hot)
         const char *unit = "";
         if (and_ui.page == AND_HOME) {           /* (HOME: encoder i is track i's DEPTH) */
             tr = i;
-            pid = i >= NTRK ? AE_PID + AE_DEPTH : AND_PID_DEPTH;
+            pid = AND_PID_DEPTH;
             lab[0] = 'T', lab[1] = (char)('1' + i), lab[2] = 0;
         }
         if (pid == PID_NONE || !(d = and_desc(pid, tr))) {
-            if (and_ui.ext >= 0 && and_ui.page == AB_SOUND && i >= 6u) {   /* (OUT: its CV and gate, as the jacks) */
-                ae_track_t *a = &and_ext.t[and_ui.ext % AE_N];
-                lab[0] = i == 6u ? 'C' : 'G', lab[1] = i == 6u ? 'V' : 'T', lab[2] = (char)('5' + and_ui.ext), lab[3] = 0;
-                if (i == 6u) {
-                    and_volts(val, a->cv_mv);
-                    and_cell(i, lab, val, a->cv_mv / 10, 0, 0);
+            int32_t pr = and_out_pair_of(sel);
+            if (and_ui.page == AB_MIX && and_ui.sub[AB_MIX] == AND_MIX_OUT && i >= 6u && pr >= 0) {
+                lab[0] = i == 6u ? 'C' : 'G', lab[1] = i == 6u ? 'V' : 'T', lab[2] = (char)('1' + pr), lab[3] = 0;
+                if (i == 6u) {                   /* (OUT: its pair's CV and gate, as the jacks) */
+                    and_volts(val, and_out_cv((uint32_t)pr));
+                    and_cell(i, lab, val, and_out_cv((uint32_t)pr) / 10, 0, 0);
                 } else {
-                    and_cell(i, lab, a->sounding ? "HIGH" : "LOW", -1, 1, a->sounding);
+                    and_cell(i, lab, and_out_gate((uint32_t)pr) ? "HIGH" : "LOW", -1, 1, and_out_gate((uint32_t)pr));
                 }
                 continue;
             }
@@ -665,12 +630,7 @@ static void and_head(const char *title, uint32_t ta, const char *eng)
     }
     for (tr = 0; tr < AND_TRACKS; tr++) {
         int32_t x = 88 + (int32_t)tr * 5;
-        uint32_t k, on = 0;
-        if (tr < NTRK)
-            for (k = 0; k < NVOICE; k++)
-                on += trk[tr].v[k].active;
-        else
-            on = (uint32_t)and_ext_gate(tr - NTRK);
+        uint32_t on = (uint32_t)and_out_on(tr);
         if (tr == AND_SEL)
             and_fill(x, 2, 4, 5, 15);
         else if (and_muted(tr))
@@ -762,21 +722,16 @@ static void and_picture(uint32_t hot)
     }
     if (and_ui.page == AB_GEN && and_pic_gen(AND_SEL))
         return;
-    if (and_ui.page < 6u && and_ui.ext < 0 && and_pic_page(and_ui.page, and_ui.sub[and_ui.page], AND_SEL))
+    if (and_ui.page < 6u && and_pic_page(and_ui.page, and_ui.sub[and_ui.page], AND_SEL))
         return;
     for (tr = 0; tr < AND_TRACKS; tr++) {
         int32_t x0 = (int32_t)tr * 16, sel = tr == AND_SEL;
-        uint32_t k, on = 0;
+        uint32_t on = (uint32_t)and_out_on(tr);
         char s[2] = {(char)('1' + tr), 0};
-        if (tr < NTRK)
-            for (k = 0; k < NVOICE; k++)
-                on += trk[tr].v[k].active;
-        else
-            on = (uint32_t)and_ext_gate(tr - NTRK);
         if (sel)
             and_fill(x0 + 1, AND_PIC_Y + 1, 15, 9, 15);
         and_text(x0 + 6, AND_PIC_Y + 2, s, sel ? 0 : 12, 1);
-        and_rect(x0 + 2, AND_PIC_Y + 13, 13, 20, tr < NTRK ? 6 : 4);
+        and_rect(x0 + 2, AND_PIC_Y + 13, 13, 20, pid_get(AO_PID_SOUND, tr) ? 4 : 6);   /* (SOUND OFF: dimmer) */
         if (on)
             and_fill(x0 + 4, AND_PIC_Y + 15, 9, 16, 15);
         if (and_muted(tr))
@@ -804,17 +759,16 @@ static void and_draw(void)
     and_target(AND_SCR_PAGE);
     and_clear();
     eng[0] = 0;
-    if (sel < NTRK)
-        str_cpy(eng, eng_abbr(ENGINES[trk[sel].eng_req % NENGINES]->name), sizeof eng);
+    if (pid_get(AO_PID_SOUND, sel))              /* (SOUND OFF: where its notes go instead) */
+        str_cpy(eng, and_out_pair_of(sel) >= 0 ? "CV" : pid_get(AO_PID_MIDI, sel) != TESS_MIDI_OFF ? "MIDI" : "OFF",
+                sizeof eng);
     else
-        str_cpy(eng, "EXT", sizeof eng);
+        str_cpy(eng, eng_abbr(ENGINES[trk[sel].eng_req % NENGINES]->name), sizeof eng);
     if (say) {
         t[0] = '!';
         str_cpy(t + 1, and_ui.say, sizeof t - 1);
     } else if (p == AND_HOME) {
         t[0] = 0;
-    } else if (and_ui.ext >= 0) {
-        str_cpy(t, p == AB_GEN ? and_gen_name(sel) : AND_EXT_PAGE[p], sizeof t);
     } else {
         and_nsub(p);                             /* (and_subs: this page's) */
         str_cpy(t, p == AB_GEN && s == 0u ? and_gen_name(sel) : s < and_nsubs ? and_subs[s].title : "", sizeof t);
@@ -831,9 +785,7 @@ static void and_draw(void)
     }
     and_head(t, ta, eng);
     and_picture(hot);
-    if (and_ui.ext >= 0)
-        and_tabs(&AND_EXT_PAGE[p], 1, 0);
-    else {
+    {
         const char *names[AND_NSUB];
         uint32_t i, n = and_nsub(p);
         for (i = 0; i < n && i < AND_NSUB; i++)

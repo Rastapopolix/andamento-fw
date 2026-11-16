@@ -4,7 +4,7 @@
  * (mix_block's master_out: DC blocker, limiter, soft clip, in mix.c) and before the board's DAC or the browser's
  * speakers. Not part of the FM-1 build: and_master_block() runs on mix_block's finished samples (int32, the Q15-ish
  * scale output_clip leaves them in), called once a control block by web/andamento/sim.c's web_ms() and, later,
- * platform/daisy's audio callback. Settings are an Andamento-only pid namespace (AM_PID + AM_*, like and_ext.c's
+ * platform/daisy's audio callback. Settings are an Andamento-only pid namespace (AM_PID + AM_*, like and_out.c's
  * AE_PID), on the FX page's second sub-page (press FX again): song-wide, so every track's, not track 1's alone
  * (and_ui.c also shows it on an external track's FX page, which otherwise has no voice to send through fx.c).
  *
@@ -20,14 +20,13 @@
  *             leaves mix_block's output bit-identical (and_master_block returns at once, computing nothing),
  *             matching fx.c's own "OFF / MIX 0 changes nothing" rule
  *
- * Not saved in a project yet, as and_ext.c's settings aren't: a project format part is for later.
- * Included by and_ui.c after and_ext.c, so the FX page's cells can read and set AM_* through and_desc/and_get/
+ * Included by and_ui.c after and_out.c, so the FX page's cells can read and set AM_* through and_desc/and_get/
  * and_set; and_master_block() is called directly by the platform (web/andamento/sim.c, platform/daisy), not
  * through and_ui.c. */
 
 #include <math.h>
 
-#define AM_PID 0xE100u                       /* settings' pids: AM_PID + AM_* (and_ext.c's AE_PID is 0xE000, 12 wide) */
+#define AM_PID 0xE100u                       /* settings' pids: AM_PID + AM_* (the retired AE_PID is 0xE000: and_project.c) */
 
 enum { AM_TILT, AM_THRESH, AM_RATIO, AM_ATTACK, AM_RELEASE, AM_MAKEUP, AM_MIX, AM_NPRM };
 

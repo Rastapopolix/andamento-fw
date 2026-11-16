@@ -228,7 +228,7 @@ void tessera_init(void)
         tessera.poly[i].pos = 3;
         tessera.quad[i].prob = 100;                     /* 9. Quad: forward, every cell, no LINK, three octaves; */
         tessera.quad[i].pos = 4;                        /* the columns still, each set to move every 4 steps */
-        tessera.qcol[i] = 3u << 2;
+        if (i < 4u) tessera.qcol[i] = 3u << 2;           /* (the grid's 4 columns, not a track's) */
         tessera.constel[i].y = 7;                       /* 10. Constellation: the middle of the sky, a star in two */
         tessera.constel[i].dens = 50;                   /* columns caught within 2 rows, the ship steered by hand */
         tessera.constel[i].size = 2;
@@ -2234,7 +2234,7 @@ uint32_t tessera_sig(uint32_t tr)
         for (uint32_t r = 0; r < TESSERA_TRACKS; r++) {
             const tessera_quad_t *a = &tessera.quad[r];
             h ^= a->pos * 31u + a->dir * 7919u + a->prob * 131u + a->link * 977u + tessera.mode[r] * 17u + a->range * 3u +
-                 tessera.qcol[r] * 104729u + tessera.qcol_sel * 61u;
+                 (r < 4u ? tessera.qcol[r] : 0u) * 104729u + tessera.qcol_sel * 61u;
             for (uint32_t i = 0; i < 4u; i++) h = (h ^ a->cell[i]) * 16777619u;
         }
         break; }
@@ -2388,27 +2388,27 @@ uint32_t tessera_euclid_pitch(const track_t *t, uint32_t step)
 #define TESS_PK_TRACK_V2 47u                         /* version 2: version 1's 45 bytes, then SEED (2) */
 #define TESS_PK_TRACK_V1 45u
 #define TESS_PK_TAIL 2u                              /* version 18 on: after the tracks, the project's: ENERGY's ARC, RESTS */
-_Static_assert(TESSERA_PK_BYTES == TESSERA_TRACKS * TESS_PK_TRACK + TESS_PK_TAIL, "TESSERA_PK_BYTES (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V20 == TESSERA_TRACKS * TESS_PK_TRACK_V20 + TESS_PK_TAIL, "TESSERA_PK_BYTES_V20 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V19 == TESSERA_TRACKS * TESS_PK_TRACK_V19 + TESS_PK_TAIL, "TESSERA_PK_BYTES_V19 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V18 == TESSERA_TRACKS * TESS_PK_TRACK_V17 + TESS_PK_TAIL, "TESSERA_PK_BYTES_V18 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V17 == TESSERA_TRACKS * TESS_PK_TRACK_V17, "TESSERA_PK_BYTES_V17 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V16 == TESSERA_TRACKS * TESS_PK_TRACK_V16, "TESSERA_PK_BYTES_V16 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V15 == TESSERA_TRACKS * TESS_PK_TRACK_V15, "TESSERA_PK_BYTES_V15 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V14== TESSERA_TRACKS * TESS_PK_TRACK_V14, "TESSERA_PK_BYTES_V14 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V13 == TESSERA_TRACKS * TESS_PK_TRACK_V13, "TESSERA_PK_BYTES_V13 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V12 == TESSERA_TRACKS * TESS_PK_TRACK_V12, "TESSERA_PK_BYTES_V12 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V11 == TESSERA_TRACKS * TESS_PK_TRACK_V11, "TESSERA_PK_BYTES_V11 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V10 == TESSERA_TRACKS * TESS_PK_TRACK_V10, "TESSERA_PK_BYTES_V10 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V9 == TESSERA_TRACKS * TESS_PK_TRACK_V9, "TESSERA_PK_BYTES_V9 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V8 == TESSERA_TRACKS * TESS_PK_TRACK_V8, "TESSERA_PK_BYTES_V8 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V7 == TESSERA_TRACKS * TESS_PK_TRACK_V7, "TESSERA_PK_BYTES_V7 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V6 == TESSERA_TRACKS * TESS_PK_TRACK_V6, "TESSERA_PK_BYTES_V6 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V5 == TESSERA_TRACKS * TESS_PK_TRACK_V5, "TESSERA_PK_BYTES_V5 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V4 == TESSERA_TRACKS * TESS_PK_TRACK_V4, "TESSERA_PK_BYTES_V4 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V3 == TESSERA_TRACKS * TESS_PK_TRACK_V3, "TESSERA_PK_BYTES_V3 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V2 == TESSERA_TRACKS * TESS_PK_TRACK_V2, "TESSERA_PK_BYTES_V2 (tessera.h)");
-_Static_assert(TESSERA_PK_BYTES_V1 == TESSERA_TRACKS * TESS_PK_TRACK_V1, "TESSERA_PK_BYTES_V1 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES == TESS_PK_TRACKS * TESS_PK_TRACK + TESS_PK_TAIL, "TESSERA_PK_BYTES (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V20 == TESS_PK_TRACKS * TESS_PK_TRACK_V20 + TESS_PK_TAIL, "TESSERA_PK_BYTES_V20 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V19 == TESS_PK_TRACKS * TESS_PK_TRACK_V19 + TESS_PK_TAIL, "TESSERA_PK_BYTES_V19 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V18 == TESS_PK_TRACKS * TESS_PK_TRACK_V17 + TESS_PK_TAIL, "TESSERA_PK_BYTES_V18 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V17 == TESS_PK_TRACKS * TESS_PK_TRACK_V17, "TESSERA_PK_BYTES_V17 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V16 == TESS_PK_TRACKS * TESS_PK_TRACK_V16, "TESSERA_PK_BYTES_V16 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V15 == TESS_PK_TRACKS * TESS_PK_TRACK_V15, "TESSERA_PK_BYTES_V15 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V14== TESS_PK_TRACKS * TESS_PK_TRACK_V14, "TESSERA_PK_BYTES_V14 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V13 == TESS_PK_TRACKS * TESS_PK_TRACK_V13, "TESSERA_PK_BYTES_V13 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V12 == TESS_PK_TRACKS * TESS_PK_TRACK_V12, "TESSERA_PK_BYTES_V12 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V11 == TESS_PK_TRACKS * TESS_PK_TRACK_V11, "TESSERA_PK_BYTES_V11 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V10 == TESS_PK_TRACKS * TESS_PK_TRACK_V10, "TESSERA_PK_BYTES_V10 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V9 == TESS_PK_TRACKS * TESS_PK_TRACK_V9, "TESSERA_PK_BYTES_V9 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V8 == TESS_PK_TRACKS * TESS_PK_TRACK_V8, "TESSERA_PK_BYTES_V8 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V7 == TESS_PK_TRACKS * TESS_PK_TRACK_V7, "TESSERA_PK_BYTES_V7 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V6 == TESS_PK_TRACKS * TESS_PK_TRACK_V6, "TESSERA_PK_BYTES_V6 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V5 == TESS_PK_TRACKS * TESS_PK_TRACK_V5, "TESSERA_PK_BYTES_V5 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V4 == TESS_PK_TRACKS * TESS_PK_TRACK_V4, "TESSERA_PK_BYTES_V4 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V3 == TESS_PK_TRACKS * TESS_PK_TRACK_V3, "TESSERA_PK_BYTES_V3 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V2 == TESS_PK_TRACKS * TESS_PK_TRACK_V2, "TESSERA_PK_BYTES_V2 (tessera.h)");
+_Static_assert(TESSERA_PK_BYTES_V1 == TESS_PK_TRACKS * TESS_PK_TRACK_V1, "TESSERA_PK_BYTES_V1 (tessera.h)");
 
 static uint8_t *tess_put16(uint8_t *p, uint32_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); return p + 2; }
 static uint32_t tess_get16(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8); }
@@ -2572,7 +2572,7 @@ static uint8_t *tess_pack_track(uint8_t *o, uint32_t tr)
     *o++ = tessera.nl_mode[tr]; *o++ = tessera.nl_len[tr]; *o++ = tessera.nl_keys[tr];
     o = tess_put_v8(o, &tessera.constel[tr]);
     o = tess_put_v9(o, &tessera.series[tr]);
-    o = tess_put_v10(o, &tessera.quad[tr], tessera.qcol[tr]);
+    o = tess_put_v10(o, &tessera.quad[tr], tr < 4u ? tessera.qcol[tr] : 3u << 2);   /* (column tr: 4 of them) */
     o = tess_put_v11(o, &tessera.constel[tr]);
     o = tess_put_v12(o, &tessera.chord[tr]);
     o = tess_put_v13(o, &tessera.grids[tr], &tessera.chord[tr]);
@@ -2588,7 +2588,7 @@ static uint8_t *tess_pack_track(uint8_t *o, uint32_t tr)
 uint32_t tessera_pack(uint8_t *o)
 {
     tessera_ensure_init();
-    for (uint32_t tr = 0; tr < TESSERA_TRACKS; tr++) o = tess_pack_track(o, tr);
+    for (uint32_t tr = 0; tr < TESS_PK_TRACKS; tr++) o = tess_pack_track(o, tr);
     *o++ = tessera.en_arc; *o++ = tessera.en_rests;      /* (version 18's tail: the project's ENERGY) */
     return TESSERA_PK_BYTES;
 }
@@ -2721,7 +2721,7 @@ static int tess_pk_track(const uint8_t *in, uint32_t tr, int apply)
     tessera.quad[tr].dir = qd[4]; tessera.quad[tr].prob = qd[5];
     tessera.quad[tr].link = (uint8_t)(qd[6] & ~(1u << tr));             /* (not itself) */
     tessera.quad[tr].range = qc[0];
-    tessera.qcol[tr] = qc[1];
+    if (tr < 4u) tessera.qcol[tr] = qc[1];
     tessera.nl_mode[tr] = nl[0]; tessera.nl_len[tr] = nl[1]; tessera.nl_keys[tr] = nl[2];
     tessera.constel[tr].y = cs[0]; tessera.constel[tr].dens = cs[1]; tessera.constel[tr].size = cs[2];
     tessera.constel[tr].autop = cs[3]; tessera.constel[tr].sky = (uint16_t)tess_get16(cs + 4);
@@ -3008,13 +3008,13 @@ void tessera_track_up(uint32_t ver, const uint8_t *in, uint8_t *out)
 /* 1 = loaded; 0 = refused, `tessera` untouched */
 int tessera_unpack(const uint8_t *in)
 {
-    const uint8_t *tail = in + TESSERA_TRACKS * TESS_PK_TRACK;
+    const uint8_t *tail = in + TESS_PK_TRACKS * TESS_PK_TRACK;
     tessera_ensure_init();
-    for (uint32_t tr = 0; tr < TESSERA_TRACKS; tr++)
+    for (uint32_t tr = 0; tr < TESS_PK_TRACKS; tr++)
         if (!tess_pk_track(in + tr * TESS_PK_TRACK, tr, 0)) return 0;
     if (tail[0] > 100u || tail[1] > 100u) return 0;
     tessera_init();                                      /* the playheads and counters: as at power-on */
-    for (uint32_t tr = 0; tr < TESSERA_TRACKS; tr++)
+    for (uint32_t tr = 0; tr < TESS_PK_TRACKS; tr++)
         tess_pk_track(in + tr * TESS_PK_TRACK, tr, 1);
     tessera.en_arc = tail[0];
     tessera.en_rests = tail[1];
@@ -3026,13 +3026,13 @@ int tessera_unpack(const uint8_t *in)
 int tessera_unpack_ver(uint32_t ver, const uint8_t *in)
 {
     uint8_t b[TESSERA_PK_BYTES];                        /* (main loop: on the stack) */
-    uint32_t n = tessera_pk_bytes(ver) / TESSERA_TRACKS;   /* (18, 19, 20, 21: their 2-byte tail rounds away) */
+    uint32_t n = tessera_pk_bytes(ver) / TESS_PK_TRACKS;   /* (18, 19, 20, 21: their 2-byte tail rounds away) */
     if (!n) return 0;
     if (ver == 21u) return tessera_unpack(in);
-    for (uint32_t tr = 0; tr < TESSERA_TRACKS; tr++)
+    for (uint32_t tr = 0; tr < TESS_PK_TRACKS; tr++)
         tessera_track_up(ver, in + tr * n, b + tr * TESS_PK_TRACK);
-    b[TESSERA_TRACKS * TESS_PK_TRACK] = ver >= 18u ? in[TESSERA_TRACKS * n] : 0u;   /* (before 18: no ENERGY) */
-    b[TESSERA_TRACKS * TESS_PK_TRACK + 1u] = ver >= 18u ? in[TESSERA_TRACKS * n + 1u] : 0u;
+    b[TESS_PK_TRACKS * TESS_PK_TRACK] = ver >= 18u ? in[TESS_PK_TRACKS * n] : 0u;   /* (before 18: no ENERGY) */
+    b[TESS_PK_TRACKS * TESS_PK_TRACK + 1u] = ver >= 18u ? in[TESS_PK_TRACKS * n + 1u] : 0u;
     return tessera_unpack(b);
 }
 /* the same checks as tessera_unpack_ver, nothing loaded (project.c reads a record before it replaces anything): 1 a
@@ -3040,13 +3040,13 @@ int tessera_unpack_ver(uint32_t ver, const uint8_t *in)
 int tessera_check(uint32_t ver, const uint8_t *in)
 {
     uint8_t b[TESSERA_PK_BYTES];                        /* (main loop: on the stack) */
-    uint32_t n = tessera_pk_bytes(ver) / TESSERA_TRACKS, tr;   /* (18, 19, 20: their 2-byte tail rounds away) */
+    uint32_t n = tessera_pk_bytes(ver) / TESS_PK_TRACKS, tr;   /* (18, 19, 20: their 2-byte tail rounds away) */
     if (!n) return 0;
-    if (ver >= 18u && (in[TESSERA_TRACKS * n] > 100u || in[TESSERA_TRACKS * n + 1u] > 100u)) return 0;
-    for (tr = 0; tr < TESSERA_TRACKS; tr++)
+    if (ver >= 18u && (in[TESS_PK_TRACKS * n] > 100u || in[TESS_PK_TRACKS * n + 1u] > 100u)) return 0;
+    for (tr = 0; tr < TESS_PK_TRACKS; tr++)
         tessera_track_up(ver, in + tr * n, b + tr * TESS_PK_TRACK);
     tessera_ensure_init();
-    for (tr = 0; tr < TESSERA_TRACKS; tr++)
+    for (tr = 0; tr < TESS_PK_TRACKS; tr++)
         if (!tess_pk_track(b + tr * TESS_PK_TRACK, tr, 0)) return 0;
     return 1;
 }

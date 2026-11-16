@@ -467,7 +467,7 @@ static int loop_replay_test(void)
         else { timing_packet(timing_now, 0x80, 60, 0, source); events_block(CTL); }
         bad += check("late loop-start input records only step zero, never both loop ends",
                      t->step[0].n == 1 && t->step[0].note[0] == 60 && t->step[15].time == ST_REST && !t->step[15].n);
-        uint32_t captured = (recording[0].duration << (recording[0].owner >> 5)) * 6144u / RECORD_UNIT;
+        uint32_t captured = (recording[0].duration << (recording[0].length >> 1)) * 6144u / RECORD_UNIT;
         bad += check("quantizing the onset preserves the 2000-unit note duration",
                      captured <= 2000u && captured + 6u > 2000u);
         bad += check("recorded velocity 111 stays 111 rather than becoming an accent",

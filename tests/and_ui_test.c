@@ -139,20 +139,20 @@ int main(int argc, char **argv)
         CHECK(and_cellv[i].used && and_cellv[i].kind == AV_DIAL, "HOME: encoder %c a dial (track %u's DEPTH)", 'A' + i, i + 1u);
     dump("home");
 
-    /* every page and sub-page, track 1 then track 5 */
+    /* every page and sub-page, track 1 then track 5 (SOUND OFF, MIDI and CV: MIX's OUT shows its pair) */
     for (tr = 0; tr < 2u; tr++) {
-        and_select(tr ? NTRK : 0u);
+        and_select(tr ? 4u : 0u);
         for (p = 0; p < 6u; p++) {
-            uint32_t n = tr ? 1u : and_nsub(p);
+            uint32_t n = and_nsub(p);
             for (s = 0; s < n; s++) {
                 and_ui.page = (uint8_t)p;
                 and_ui.sub[p] = (uint8_t)s;
                 and_ui.hot_ms = and_ui.say_ms = 0;
                 web_screen();
-                snprintf(where, sizeof where, "T%u %s %u", tr ? 5u : 1u, (tr ? AND_EXT_PAGE : AND_PAGE)[p], s + 1u);
+                snprintf(where, sizeof where, "T%u %s %u", tr ? 5u : 1u, AND_PAGE[p], s + 1u);
                 pframe(where, 1);
                 lint(where);
-                snprintf(where, sizeof where, "t%u_%s%u", tr ? 5u : 1u, (tr ? AND_EXT_PAGE : AND_PAGE)[p], s + 1u);
+                snprintf(where, sizeof where, "t%u_%s%u", tr ? 5u : 1u, AND_PAGE[p], s + 1u);
                 for (i = 0; where[i]; i++)
                     if (where[i] >= 'A' && where[i] <= 'Z') where[i] = (char)(where[i] + 32);
                 dump(where);
@@ -160,6 +160,7 @@ int main(int argc, char **argv)
         }
     }
     and_select(0);
+    memset(and_ui.sub, 0, sizeof and_ui.sub);    /* (the loop left each page on its last sub-page) */
     and_ui.page = AB_MIX;                        /* (pid 0x000, LEVEL, is a setting, not an empty cell) */
     web_screen();
     CHECK(and_ui.cell[0] == 0x000 && and_cellv[0].used, "MIX: cell A is LEVEL");
@@ -276,8 +277,8 @@ int main(int argc, char **argv)
     web_screen();
     CHECK(and_fbs[AND_SCR_DIAL][23][and_cellv[0].x0 - 1] == 0, "1.3 s later: cell A plain again");
 
-    /* DATA: turned, the selected track's LEVEL (shown as a setting turned; its own cell lit on MIX); tracks 5..8 their
-     * VEL; pushed and turned, the page's sub-pages, either way round; letting go changes nothing */
+    /* DATA: turned, the selected track's LEVEL (shown as a setting turned; its own cell lit on MIX), on any of the 8
+     * tracks; pushed and turned, the page's sub-pages, either way round; letting go changes nothing */
     {
         uint32_t lvl = PID_TRACK(P_LEVEL), s0, n;
         int32_t v0;
@@ -294,11 +295,11 @@ int main(int argc, char **argv)
         web_data(5);
         CHECK(and_get(lvl, 0) == v0, "DATA: back up to %d", (int)v0);
         run_ms(1300);
-        and_select(NTRK);                        /* (track 5: no voice, its MIDI velocity) */
+        and_select(4);                           /* (track 5: a core track, its own LEVEL) */
         s0 = (uint32_t)and_get(lvl, 0);
-        v0 = and_get(AE_C(AE_VEL), NTRK);
+        v0 = and_get(lvl, 4);
         web_data(-10);
-        CHECK(and_get(AE_C(AE_VEL), NTRK) == v0 - 10, "DATA on track 5: VEL down 10");
+        CHECK(and_get(lvl, 4) == v0 - 10, "DATA on track 5: its LEVEL down 10 (%d -> %d)", (int)v0, (int)and_get(lvl, 4));
         CHECK(and_get(lvl, 0) == (int32_t)s0, "DATA on track 5: track 1's LEVEL left");
         web_data(10);
         and_select(0);

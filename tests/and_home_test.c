@@ -97,10 +97,10 @@ int main(int argc, char **argv)
     web_push(0);
     CHECK(pid_get(AND_PID_DEPTH, 0) == 100, "encoder A pushed: DEPTH back to 100");
     web_enc(4, -5);
-    CHECK(ae_get(AE_DEPTH, 0) == 95 && pid_get(AND_PID_DEPTH, 0) == 100, "encoder E: track 5's DEPTH 95 (%d)",
-          ae_get(AE_DEPTH, 0));
+    CHECK(pid_get(AND_PID_DEPTH, 4) == 95 && pid_get(AND_PID_DEPTH, 0) == 100, "encoder E: track 5's DEPTH 95 (%d)",
+          pid_get(AND_PID_DEPTH, 4));
     web_push(4);
-    CHECK(ae_get(AE_DEPTH, 0) == 100, "encoder E pushed: track 5's DEPTH back to 100");
+    CHECK(pid_get(AND_PID_DEPTH, 4) == 100, "encoder E pushed: track 5's DEPTH back to 100");
     CHECK(and_ui.page == AND_HOME, "encoders E..H: HOME stays");
 
     /* the lanes */
