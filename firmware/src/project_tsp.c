@@ -860,10 +860,10 @@ static void tsp_restore(const uint8_t *raw)
     if (tsp_seen.at[TSP_SUB]) memcpy(tessera.sub_shape, raw + tsp_seen.at[TSP_SUB], PROJ_NTRK);
     if (tsp_seen.at[TSP_MIDI]) memcpy(tessera.midi_ch, raw + tsp_seen.at[TSP_MIDI], PROJ_NTRK);
     if (tsp_seen.at[TSP_TRANSP])                       /* (saved before TRANSPOSE: tessera_reset's 0) */
-        for (uint32_t k = 0; k < TESSERA_TRACKS; k++)
+        for (uint32_t k = 0; k < PROJ_NTRK; k++)
             tessera.midi_tr[k] = (int8_t)((int32_t)raw[tsp_seen.at[TSP_TRANSP] + k] - TESS_MIDI_TR);
     if (tsp_seen.at[TSP_SOUND])                        /* (saved before SOUND: tessera_reset's ON) */
-        memcpy(tessera.sound_off, raw + tsp_seen.at[TSP_SOUND], TESSERA_TRACKS);
+        memcpy(tessera.sound_off, raw + tsp_seen.at[TSP_SOUND], PROJ_NTRK);
     tessera.key_link = tsp_seen.at[TSP_KEY] ? raw[tsp_seen.at[TSP_KEY]] : 0u;   /* (saved before KEY LINK: OWN) */
     if (tsp_seen.at[TSP_SEED]) {                       /* (saved before STEP as seed: tessera_reset's OFF, FREE) */
         memcpy(tessera.sd_src, raw + tsp_seen.at[TSP_SEED], PROJ_NTRK);
@@ -955,7 +955,7 @@ static void tsp_restore(const uint8_t *raw)
         memcpy(tessera.sub_human, raw + tsp_seen.at[TSP_HUMAN], PROJ_NTRK);
     else                                               /* (saved before HUMAN TIME: TWEAK HUMAN timed a generator's
                                                         * steps, up to 20 ms at 100; a STEP track's HUMAN did nothing) */
-        for (t = 0; t < TESSERA_TRACKS; t++) {
+        for (t = 0; t < PROJ_NTRK; t++) {
             if (tessera.mode[t] == TESS_ENG_OFF) tessera.evolve[t].human = 0;
             else tessera.sub_human[t] = (uint8_t)((tessera.evolve[t].human + 2u) / 5u);
         }
