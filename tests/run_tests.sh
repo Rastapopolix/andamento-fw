@@ -60,6 +60,11 @@
 #                   an empty capture barely changes a tone, a filled one keeps sounding after the dry input stops,
 #                   FREEZE holds the capture still, a busier DENS is not quieter, AT_GRAINS (8) is never exceeded,
 #                   and determinism.
+# ANDAMENTO PROJECT (tests/and_project_test.c): Andamento's project file, format 1 (platform/andamento/and_project.c),
+#                   in the virtual prototype's build: a busy project (tracks 1..8, the song, patterns) saved and loaded
+#                   back value for value and byte for byte; unknown chunks, pids and tracks skipped; what a file lacks
+#                   at a new project's values; a value out of range clamped; cut-off, damaged and malformed files
+#                   refused whole with nothing changed; the golden file tests/fixtures/andp_v1.and still loads.
 # UI (tests/ui_test.c): the UI sources against stub display / buttons / knobs: sound loads keep the steps and
 #                   the track's ARP / SCL / SLICER, the SEQ > PATTERNS loader and its REPLACE? dialog, the
 #                   one-step undo of both (EDIT held), REC on TRACKS / SEQ / ARP, STEP and ARP while recording,
@@ -222,7 +227,7 @@ qmap() {
         tests/target_budget.txt) QSEL="$QSEL target_budget" ;;
         tests/ui_render.*) QSEL="$QSEL ui_renders" ;;
         tests/oled_render.*) QSEL="$QSEL oled_render" ;;
-        platform/andamento/*) QSEL="$QSEL oled_render and_keys and_home and_ext and_ui and_pics and_master and_texture" ;;
+        platform/andamento/*) QSEL="$QSEL oled_render and_keys and_home and_ext and_ui and_pics and_master and_texture and_project" ;;
         tests/and_keys_test.c) QSEL="$QSEL and_keys" ;;
         tests/and_home_test.c) QSEL="$QSEL and_home" ;;
         tests/and_ext_test.c) QSEL="$QSEL and_ext" ;;
@@ -230,7 +235,8 @@ qmap() {
         tests/and_pics_test.c) QSEL="$QSEL and_pics" ;;
         tests/and_master_test.c) QSEL="$QSEL and_master" ;;
         tests/and_texture_test.c) QSEL="$QSEL and_texture" ;;
-        web/andamento/*) QSEL="$QSEL and_keys and_home and_ext and_ui and_pics and_master and_texture" ;;
+        tests/and_project_test.c | tests/fixtures/andp_*) QSEL="$QSEL and_project" ;;
+        web/andamento/*) QSEL="$QSEL and_keys and_home and_ext and_ui and_pics and_master and_texture and_project" ;;
         firmware/src/mo_font.h) QSEL="$QSEL $G_UI oled_render" ;;
         tests/demo_steps.h | tests/demo_projects.c) QSEL="$QSEL demo_projects" ;;
         tests/phys_ref.cpp | tests/phys_fixed.c) QSEL="$QSEL phys_ref" ;;
@@ -493,6 +499,13 @@ and_texture() {                                   # (the headers as and_keys: we
     step "Andamento texture engine (platform/andamento/and_texture.c): MIX 0 bit-identical, capture, FREEZE, DENS, AT_GRAINS bound, determinism" \
         "$OUT/and_texture"
 }
+and_project() {                                   # (the headers as and_keys: web/andamento/build.sh --headers)
+    sh web/andamento/build.sh --headers > /dev/null || { fail "web/andamento/build.sh --headers"; return; }
+    build and_project and_project_test -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 \
+        -DMELODEE_PHYS=1 -Ibuild/andamento/gen -Ifirmware/src -Itests || return
+    step "Andamento project file (platform/andamento/and_project.c): round trip, unknowns skipped, defaults, clamped, refusals, golden file" \
+        "$OUT/and_project" tests/fixtures/andp_v1.and
+}
 dsp_tracks() {
     build hostsim hostsim -O2 $FW || return
     step "DSP render (FM6 INIT VOICE)" "$OUT/hostsim" 12 24 1 "$OUT/render.wav"
@@ -627,6 +640,7 @@ if core && [ $TABLES = 1 ]; then
     job and_pics
     job and_master
     job and_texture
+    job and_project
     t "boot audio: codec waits for settled silent DMA and shuts down before I2S" audio_boot_test -w
     t "audio: overload protection, bounded fades and DMA diagnostics" audio_test $FW
     t "audio: silent bench keeps synthesis running and silences physical output" audio_silent_test:audio_test \

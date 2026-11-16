@@ -20,7 +20,9 @@
  *               settle with the circuit); the gate high while a note sounds
  *
  * The settings (a pid of its own, 0xE0xx, for and_ui.c's pages: GEN, the generator's three, SEED, DIV, OCT, GATE;
- * OUT: CHAN, VEL, DEPTH, MUTE) are not saved in a project yet: a new project format part is for later. */
+ * OUT: CHAN, VEL, DEPTH, MUTE) are saved in the project (and_project.c, the track's TRAK). AE_P1..AE_P3 are the
+ * pages' view of the generator playing; a project saves every generator's own three instead, as AE_GPS + (gen - 1)
+ * * 3 + k (0xE010..0xE021), so a change of GEN after a load finds them as they were. */
 
 #define AE_N 4u                                  /* external tracks: Andamento's 5..8 */
 #define AE_PID 0xE000u                           /* their settings' pids: AE_PID + AE_* */
@@ -29,6 +31,7 @@
 
 enum { AE_OFF, AE_TURING, AE_EUCLID, AE_MARKOV, AE_AWAKE, AE_POLY, AE_SERIES, AE_GENS };
 enum { AE_GEN, AE_P1, AE_P2, AE_P3, AE_SEED, AE_DIV, AE_OCT, AE_GATE, AE_VEL, AE_CHAN, AE_DEPTH, AE_MUTE, AE_NPRM };
+#define AE_GPS 0x10u                             /* each generator's own three: AE_GPS + (gen - 1) * 3 + k (saved) */
 
 static const char *const AE_GEN_NAME[AE_GENS] = {"OFF", "TURING", "EUCLID", "MARKOV", "AWAKE", "POLY", "SERIES"};
 static const char *const AE_DIV_NAME[6] = {"1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32"};
@@ -89,6 +92,8 @@ static struct {
 static const param_desc_t *ae_desc(uint32_t x, uint32_t tr)
 {
     const ae_track_t *a = &and_ext.t[tr % AE_N];
+    if (x >= AE_GPS && x < AE_GPS + 3u * (AE_GENS - 1u))
+        return &AE_GP[1u + (x - AE_GPS) / 3u][(x - AE_GPS) % 3u];
     if (x >= AE_P1 && x <= AE_P3)
         return a->gen ? &AE_GP[a->gen][x - AE_P1] : &AE_NONE_DESC;
     return x < AE_NPRM ? &AE_DESC[x] : &AE_NONE_DESC;
@@ -108,6 +113,8 @@ static int32_t ae_get(uint32_t x, uint32_t tr)
     case AE_DEPTH: return a->depth;
     case AE_MUTE: return a->mute;
     }
+    if (x >= AE_GPS && x < AE_GPS + 3u * (AE_GENS - 1u))
+        return a->gp[1u + (x - AE_GPS) / 3u][(x - AE_GPS) % 3u];
     return 0;
 }
 static void ae_note_off(ae_track_t *a);
@@ -134,6 +141,9 @@ static void ae_set(uint32_t x, uint32_t tr, int32_t v)
         if (v)
             ae_note_off(a);
         break;
+    default:
+        if (x >= AE_GPS && x < AE_GPS + 3u * (AE_GENS - 1u))
+            a->gp[1u + (x - AE_GPS) / 3u][(x - AE_GPS) % 3u] = (uint8_t)v;
     }
 }
 
