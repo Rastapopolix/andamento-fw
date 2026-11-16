@@ -260,8 +260,8 @@ static uint32_t tsp_pack(uint8_t *raw, const project_t *q, int runtime)
 
     tsp_begin(&w, TSP_SONG, 1);                        /* the song chain, each row's patterns */
     tsp_bytes(&w, &q->chain, sizeof q->chain);
-    if (runtime) tsp_bytes(&w, chain_patterns, sizeof chain_patterns);
-    else for (i = 0; i < sizeof chain_patterns; i++) tsp_byte(&w, 0);
+    for (i = 0; i < TSP_CHAIN_PATS; i++)               /* (each row's tracks 1..4: chain_patterns is NTRK wide) */
+        tsp_byte(&w, runtime ? chain_patterns[i / PROJ_NTRK][i % PROJ_NTRK] : 0u);
     tsp_end(&w);
 
     tsp_begin(&w, TSP_MOTION, 1);                      /* the motion, each event's pattern */
@@ -464,7 +464,7 @@ static uint32_t tsp_pack(uint8_t *raw, const project_t *q, int runtime)
         for (t = 0; t < PROJ_NTRK * NPAT; t++)              /* (DIR: only when a pattern is not FWD) */
             if (pattern_dir[t / NPAT][t % NPAT]) {
                 tsp_begin(&w, TSP_SDIR, 1);
-                tsp_bytes(&w, pattern_dir, sizeof pattern_dir);
+                tsp_bytes(&w, pattern_dir, PROJ_NTRK * NPAT);   /* (tracks 1..4: pattern_dir[NTRK][NPAT]) */
                 tsp_end(&w);
                 break;
             }
@@ -618,10 +618,10 @@ static int tsp_valid(const uint8_t *raw, uint32_t len)
     }
     if (tsp_seen.at[TSP_SONG]) {
         const uint8_t *p = raw + tsp_seen.at[TSP_SONG];
-        if (tsp_seen.ver[TSP_SONG] != 1u || tsp_seen.len[TSP_SONG] != sizeof q->chain + sizeof chain_patterns) return 0;
+        if (tsp_seen.ver[TSP_SONG] != 1u || tsp_seen.len[TSP_SONG] != sizeof q->chain + TSP_CHAIN_PATS) return 0;
         memcpy(&q->chain, p, sizeof q->chain);
         if (!chain_valid(&q->chain)) return 0;
-        for (i = 0; i < sizeof chain_patterns; i++) if (p[sizeof q->chain + i] >= NPAT) return 0;
+        for (i = 0; i < TSP_CHAIN_PATS; i++) if (p[sizeof q->chain + i] >= NPAT) return 0;
     }
     if (tsp_seen.at[TSP_MOTION]) {
         const uint8_t *p = raw + tsp_seen.at[TSP_MOTION], *tag;
@@ -829,7 +829,9 @@ static void tsp_restore(const uint8_t *raw)
     chain_config = proj_scratch.chain;
     memset(chain_patterns, 0, sizeof chain_patterns);
     memset(motion_pattern, 0, sizeof motion_pattern);
-    if (tsp_seen.at[TSP_SONG]) memcpy(chain_patterns, raw + tsp_seen.at[TSP_SONG] + sizeof proj_scratch.chain, sizeof chain_patterns);
+    if (tsp_seen.at[TSP_SONG])
+        for (i = 0; i < TSP_CHAIN_PATS; i++)
+            chain_patterns[i / PROJ_NTRK][i % PROJ_NTRK] = raw[tsp_seen.at[TSP_SONG] + sizeof proj_scratch.chain + i];
     if (tsp_seen.at[TSP_MOTION]) memcpy(motion_pattern, raw + tsp_seen.at[TSP_MOTION] + sizeof proj_scratch.motion, sizeof motion_pattern);
     for (t = 0; t < PROJ_NTRK; t++) {
         trk[t].pattern = proj_scratch.pattern[t]; trk[t].pattern_next = 0xff; trk[t].pattern_gen++;
@@ -928,7 +930,7 @@ static void tsp_restore(const uint8_t *raw)
         memcpy(tessera.pat_gen, raw + tsp_seen.at[TSP_PGEN], PROJ_NTRK);
         for (uint32_t k = 0; k < PROJ_NTRK; k++) tessera_pg_put(k, raw + tsp_seen.at[TSP_PGEN] + PROJ_NTRK + k * NPAT * TESS_PG_BYTES);
     } else memset(tessera.pat_gen, 0, sizeof tessera.pat_gen);
-    if (tsp_seen.at[TSP_SDIR]) memcpy(pattern_dir, raw + tsp_seen.at[TSP_SDIR], sizeof pattern_dir);
+    if (tsp_seen.at[TSP_SDIR]) memcpy(pattern_dir, raw + tsp_seen.at[TSP_SDIR], PROJ_NTRK * NPAT);
     else memset(pattern_dir, 0, sizeof pattern_dir);   /* (saved without it: FWD, as before) */
     if (tsp_seen.at[TSP_DMAP]) memcpy(tessera.midi_dmap, raw + tsp_seen.at[TSP_DMAP], PROJ_NTRK);
     else memset(tessera.midi_dmap, 0, sizeof tessera.midi_dmap);   /* (saved without it: GM, as before) */

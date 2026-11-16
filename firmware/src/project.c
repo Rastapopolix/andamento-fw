@@ -44,6 +44,7 @@ typedef struct {
 #define PROJ_CZ_BYTES (PROJ_NTRK * 144u)            /* the template's retired CZ-1 tones (tmpl_t): reserved bytes now */
 #define PROJ_P5_BYTES (PROJ_NTRK * 138u)            /* .. and its Prophet programs */
 #define PROJ_REC_DIR_BYTES 44u                 /* the timed notes' directory: 32 eleven-bit counts (0..1024) */
+#define TSP_CHAIN_PATS (CHAIN_ROWS * PROJ_NTRK)       /* the song chain's patterns in a .tsp: each row's tracks 1..4 */
 _Static_assert(G_MFXTYPE == PROJ_GLOBALS && G_FXMODE==40u && G_BUDGET==41u && G_COUNT==42u, "old global IDs stay fixed (the template)");
 #define PROJ_DEF_SOUND 0xFFu                   /* preset byte: the track's power-on sound, no steps (kept from an
                                                 * import of before 1.0) */
@@ -238,7 +239,7 @@ static void project_capture(project_t *p)
         motion_native_snapshot(&trk[i], p->oracle[i], MO_TAG_ORACLE, OR_N);   /* (the patch's own, not motion's) */
     }
     p->oracle_ok = 1;
-    memcpy(p->drum,drum_patch,sizeof drum_patch);
+    memcpy(p->drum,drum_patch,sizeof p->drum);   /* (tracks 1..4) */
     p->fm6_fn_ok = 1;
     p->motion = motion;
     for (i = 0; i < RECORD_MAX; i++) p->recording[i] = recording_snapshot(i);
@@ -397,7 +398,7 @@ static int project_restore_runtime(const project_t *input)
     transport_req = 0;
     pattern_init();
     memcpy(recording, p->recording, sizeof recording);
-    memcpy(drum_patch,p->drum,sizeof drum_patch);
+    memcpy(drum_patch,p->drum,sizeof p->drum);
     recording_reindex();
     chain_defaults(&chain_config);
     motion = p->motion;
