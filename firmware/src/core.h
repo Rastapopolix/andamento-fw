@@ -411,7 +411,9 @@ static void step_set_cond(step_t *s, uint32_t c)
 }
 static int step_acc_valid(const step_t *s) { return s->hit ? !(s->acc & ~s->hit) : s->time != ST_REST || !s->acc; }
 #define MOTION_MAX 64u
-/* Four tracks x64 steps fit one byte. Values retain their signed parameter range. */
+/* Four tracks x64 steps fit one byte. Values retain their signed parameter range. Andamento (8 tracks): motion
+ * records on tracks 1..4 only until its own project chunk (MOTN, format step 3) gives the place more bits */
+#define MOTION_TRACKS 4u
 typedef struct { uint8_t place, param; int16_t value; } motion_event_t;
 typedef struct { uint8_t count, on, rsv[2]; motion_event_t event[MOTION_MAX]; } motion_store_t;
 _Static_assert(sizeof(motion_store_t) == 260u, "motion disk layout");
