@@ -75,6 +75,7 @@ static void and_ui_say(const char *s)
 #define AM_C(x) (AM_PID + (x))
 #define AT_C(x) (AT_PID + (x))
 #include "and_pages.c"                            /* SOUND, MOD, FX from Tessera's page table, Monomachine-style */
+#include "and_project.c"                          /* the project file (format 1: the container, settings, patterns) */
 
 /* a setting of track tr (0..7): Tessera's (pid.c), an external track's (AE_PID + AE_*), or one of the song-wide
  * modules (AM_PID + AM_*, the master bus; AT_PID + AT_*, the texture engine: tr does not matter, each is the
