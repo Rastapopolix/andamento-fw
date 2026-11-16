@@ -31,7 +31,7 @@ Every file in this tree that carries an `SPDX-License-Identifier: GPL-3.0-only` 
 
 - the firmware: `firmware/` (app, HAL, update loader)
 - the build script and tools: `build.sh`, `tools/`
-- the web pages (installer, editor) and their tests: `web/` (not the Fukiai font, below)
+- Andamento's virtual prototype: `web/andamento/`
 - the host tests: `tests/`
 - the Daisy Seed build for Andamento: `platform/daisy/` (not its linker script, below), and Andamento's screen:
   `platform/andamento/`
@@ -56,9 +56,7 @@ Melodee's additions and modifications are credited separately in the source file
 | Felucca 1.6's fix for its issue #236 (rows dark while a storage erase stops the LED scan), ported by hand | GPL-3.0-only | `firmware/src/storage_hw.c` |
 | Felucca 1.6.1's safe CPU1 hold (`fm1_cpu1_halt`, release commit a53ecf4), as adapted in Melodee 1.4.3 (keremimo/melodee 6e6a580) | GPL-3.0-only | `firmware/hal/fm1_core1_stop.h` |
 | The PHASE engine's waveforms: a C port of the oscillator of CrispyZebra (<https://github.com/hugelton/CrispyZebra>) | GPL-3.0 | `firmware/src/eng_phase.c` |
-| The panel picture | GPL-3.0-only | `docs/panel.jpg` |
 | Felucca 1.6.1's update package check (the update entry takes only a package whose flash.bin is an FM-1's size; another board's is refused before anything is erased), ported by hand | GPL-3.0-only | `firmware/src/ota.c`, `tests/ota_test.c`, `tests/ldr_test.c` |
-| The Fukiai icon font (<https://github.com/hugelton/Fukiai>): the web editor's icons (the firmware draws its own: `tools/gen_icons.py`, GPL-3.0-only; `tools/gen_aa_icons.py` still rasterises Fukiai for comparison) | MIT | `web/fukiai.ttf`, `LICENSES/MIT-Fukiai.txt`, `web/FUKIAI-LICENSE.txt` |
 
 ## Third-party material
 
@@ -69,7 +67,7 @@ Melodee's additions and modifications are credited separately in the source file
 | ChoralRoot FM-1 contributors (<https://github.com/Quixotic7/ChoralRootFM1>, v0.16, commit `9c7445cdd7b767c779741d28654fb59cca3acd97`): boot stub, interrupted-update write ordering, commit-marker/CRC compensation, and recovery tests, adapted for Melodee. The shared `CRSTUB` / `CRBM` format is retained. | GPL-3.0-only | `firmware/stub/`, `firmware/loader/ldr_core.c`, `tools/build.py`, `tools/fm1pkg_make.py`, `tests/boot_stub*`, `tests/loader_powercut_test.c` |
 | Chakra Petch font by The Chakra Petch Project Authors (<https://github.com/m4rc1e/Chakra-Petch>): the UI text and the keycap labels, rasterised into the firmware at build time (`tools/gen_aa_font.py`, `tools/gen_aa_keycaps.py`; the generated tables are not offered as a font, and the font declares no Reserved Font Name) | SIL OFL 1.1 | `assets/fonts/ChakraPetch-*.ttf`, `LICENSES/OFL-ChakraPetch.txt` |
 | Rubik font by The Rubik Project Authors (<https://github.com/googlefonts/rubik>): Melodee's UI face, kept for the `rubik` preset of `tools/gen_aa_font.py` (not in the firmware since Tessera's look) (`tools/gen_aa_font.py`, `tools/gen_aa_keycaps.py`; the generated tables are not offered as a font, and the font declares no Reserved Font Name) | SIL OFL 1.1 | `assets/fonts/Rubik[wght].ttf`, `LICENSES/OFL-Rubik.txt` |
-| Inter Tight font by The Inter Project Authors: the panel diagram (`tools/gen_panel_diagram.py`, `docs/panel.jpg`) and the `inter-tight` preset of `tools/gen_aa_font.py` (the firmware's text was Inter Tight up to Melodee 0.13) | SIL OFL 1.1 | `assets/fonts/InterTight[wght].ttf`, `LICENSES/OFL-InterTight.txt` (also `assets/fonts/OFL.txt`) |
+| Inter Tight font by The Inter Project Authors: the `inter-tight` preset of `tools/gen_aa_font.py` (the firmware's text was Inter Tight up to Melodee 0.13) | SIL OFL 1.1 | `assets/fonts/InterTight[wght].ttf`, `LICENSES/OFL-InterTight.txt` (also `assets/fonts/OFL.txt`) |
 | DaisySP by Electrosmith, Corp and Emilie Gillet (<https://github.com/electro-smith/DaisySP>): the PHYS engine's modal and string models and the resonator, ported to fixed point | MIT | `firmware/src/phys_dsp.c`, `LICENSES/MIT-DaisySP.txt` |
 | Rings by Emilie Gillet (<https://github.com/pichenettes/eurorack>): the PHYS engine's sympathetic strings, ported to fixed point | MIT | `firmware/src/phys_symp.c`, `LICENSES/MIT-Rings.txt` |
 | Grids by Emilie Gillet (<https://github.com/pichenettes/eurorack>): the ATLAS generator's map of 25 drum patterns (`grids/resources.cc` node_0..node_24, unchanged) and its way of reading it (`grids/pattern_generator.cc` ReadDrumMap and EvaluateDrums: the blend, CHAOS, the accent), restated in C | GPL-3.0-or-later | `firmware/src/gen_grids.h`, `firmware/src/gen.c` |
@@ -110,8 +108,7 @@ the GPL, and their copyright stays with JieLi Technology. The SDK has no NOTICE 
 files may be distributed together with GPL-3.0 code; Melodee itself stays GPL-3.0-only.
 
 Every distribution of a package carries the licence texts with it: the release folder
-(`tools/build.py --release`) and the site (`web/make_site.py`, next to the package in
-`firmware/` and linked from the installer page).
+(`tools/build.py --release`).
 
 ## Standalone ROM recovery tool
 

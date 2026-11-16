@@ -10,7 +10,7 @@ Every icon is a few strokes and fills on a 24-unit grid (DRAW below), round caps
 rasterised at any size (cv_icon_on draws nothing for it). Parameter icons are off in Melodee (icons.c
 MELODEE_ICONS 0): only the few the screens still draw by name have drawings.
 
-Output (as tools/gen_aa_icons.py's, src/icons.c reads it): per size S
+Output (src/icons.c reads it): per size S
   AI<S>_DATA   cells of S x S px, 4-bit alpha, 2 px per byte, rows back to back
   AI<S>_IDX    the cell of every icon at that size, 0xFF = none (12 px: every drawing; 16 / 24 px: BIG / HUGE)
 --sheet writes a PNG specimen of every drawing at every size (white on the NIGHT background).
