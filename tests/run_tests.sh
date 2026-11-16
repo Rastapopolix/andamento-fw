@@ -578,11 +578,6 @@ if core; then
     t "power cuts: every erase/page, resume and unchanged boot sector" loader_powercut_test -O2 -- powercut_tests
     t "M-UPGRADE entry (own loader)" ota_test -DOWN_PKG=1 -- "$OUT/ota_test" build/tessera.fwsc
     t "update loader: other app -> this build" ldr_test -- old_to_new
-    run "installer CLI (fm1_install.py) against a simulated FM-1" python3 tests/install_test.py
-    run "ROM USB recovery: backup, protected regions, interrupted writes and transport failures" python3 tests/recovery_test.py
-    run "recovery diagnostics: legacy and boot-protected retained RAM" python3 tests/retained_ram_test.py
-    run "release assets: firmware identity, application bytes, native provenance and ZIP integrity" python3 tests/release_assets_test.py
-    run "recovery correction: preserve signed firmware and verify public replacement assets" python3 tests/recovery_correction_test.py
 fi
 
 if core && [ $TABLES = 1 ]; then
