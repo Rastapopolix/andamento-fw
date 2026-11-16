@@ -68,10 +68,16 @@
 #else
 #define LOOK(d, m) (d)
 #endif
-/* SID (3) and MACRO (21, Plaits): engines no longer in the code (2026-11-12; SID out of the device since 2.0, DRUM's
- * SID KIT since 3.0, MACRO a prototype never shipped). Their IDs stay reserved: a track saved with them loads FM6's INIT */
+#ifndef MELODEE_PLAITS
+#define MELODEE_PLAITS 0         /* MACRO (eng_macro.c): Plaits' synthesis, C++ (macro_glue.cc, third_party/mi). Andamento
+                                  * 2026-11-16: back from Tessera's history, on in the Daisy build and the prototype
+                                  * (platform/daisy/Makefile, web/andamento/build.sh); the C-only host tests leave it out,
+                                  * tests/macro_test.c builds it in */
+#endif
+/* SID (3): no longer in the code (2026-11-12; out of the device since 2.0, DRUM's SID KIT since 3.0); its ID stays
+ * reserved: a track saved with it loads FM6's INIT. MACRO (21): with MELODEE_PLAITS, else the same */
 #define ENG_BUILT(e) ((e) == 3u ? 0 : (e) == 9u ? PHYS_ON : (e) == 12u ? MELODEE_FM6 : (e) == 15u ? 0 : (e) == 19u ? MELODEE_ORACLE : \
-                      (e) == 21u ? 0 : 1)   /* SID PHYS FM6 CZ-1 ORACLE MACRO (PHYS: left out, not retired,
+                      (e) == 21u ? MELODEE_PLAITS : 1)   /* SID PHYS FM6 CZ-1 ORACLE MACRO (PHYS: left out, not retired,
                                                    * since 2026-10-21: its tracks load FM's first voice) */
 #define TRIO_ON (MELODEE_TRIO || MELODEE_LEGACY_EXTRAS)
 #define PHYS_ON (MELODEE_PHYS || MELODEE_LEGACY_EXTRAS)
@@ -84,14 +90,14 @@
 #define USER_GENERAL 16u
 #define USER_NATIVE_P5 20u
 #define NENGINES 22               /* 13 SLICE and 14 OBXF reserved; 15 native CZ-1; 20 reserved (USER_NATIVE_P5's
-                                   * namespace in the browser); 21 reserved (MACRO, removed) */
+                                   * namespace in the browser); 21 MACRO (Plaits) */
 #define USER_NATIVE_FM 17u
 #define USER_NATIVE_CZ 18u
 #define USER_NONE 256u
 #define ENGI_ANALOG 0u           /* retired in 1.2: never selectable (eng_ok), its stored sounds play silent */
 #define ENGI_DIGITAL 1u          /* retired: never selectable (eng_ok), its stored sounds play silent */
-#define NENG_SHOWN (NENGINES - 10u - !MELODEE_ORACLE - !MELODEE_SLICE - (MELODEE_LEGACY_EXTRAS ? 1u : 6u - MELODEE_TRIO - MELODEE_PHYS) - 2u /* SID, MACRO */ - \
-                    !MELODEE_FM6)   /* the engines one can pick: PRESETS, the EDIT
+#define NENG_SHOWN (NENGINES - 10u - !MELODEE_ORACLE - !MELODEE_SLICE - (MELODEE_LEGACY_EXTRAS ? 1u : 6u - MELODEE_TRIO - MELODEE_PHYS) - 1u /* SID */ - \
+                    !MELODEE_FM6 - !MELODEE_PLAITS)   /* the engines one can pick: PRESETS, the EDIT
                                                 * layer, the editor, in the display order of engines.c ENGINE_ORDER */
 #define ENGI_SLICE 13u           /* reserved without MELODEE_SLICE: never selectable (eng_ok) */
 #ifdef SMP_USER_SLOTS

@@ -54,8 +54,8 @@ static const char *const N_MDST[] = {"OFF", "PITCH", "CUT", "SHP", "AMP", "PAN",
                                      "VIB", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "DEPTH"};
 static const char *const N_ENGNAME[] = {"-", "-", "-", "-", "-", MELODEE_LEGACY_EXTRAS ? "VOICE" : "-", TRIO_ON ? "TRIO" : "-", MELODEE_LEGACY_EXTRAS ? "WHEEL" : "-", "-", PHYS_ON ? "PHYS" : "-",
                                              "DRUM", MELODEE_LEGACY_EXTRAS ? "NOISE" : "-", "FM6", MELODEE_SLICE ? "SLICE" : "-", "-", "-", "-", "-", "-",
-                                             MELODEE_ORACLE ? "ORACLE" : "-", "-", "-"};   /* (3 SID: removed
-                                                                                   * 2026-11-12; 15 CZ-1: retired 2026-10-22; 19 PROPHET, then ORACLE; 20 reserved, 21 MACRO (removed):
+                                             MELODEE_ORACLE ? "ORACLE" : "-", "-", MELODEE_PLAITS ? "MACRO" : "-"};   /* (3 SID: removed
+                                                                                   * 2026-11-12; 15 CZ-1: retired 2026-10-22; 19 PROPHET, then ORACLE; 20 reserved, 21 MACRO (Plaits; MELODEE_PLAITS):
                                                                                    * one name per engine ID, NENGINES) */
 _Static_assert(NELEM(N_ENGNAME) == NENGINES, "N_ENGNAME: one name per engine ID");
 

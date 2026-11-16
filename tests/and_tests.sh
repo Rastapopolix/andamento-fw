@@ -15,7 +15,7 @@
 #   and_keys      the 16 keys and their RGB lights           and_home     HOME, DEPTH, the 8 lanes, ENERGY's arc
 #   and_ext       tracks 5..8: MIDI, CV / gate, 1..4 unchanged  and_ui     both screens on every page, their layout
 #   and_pics      the generators' pictures on GEN            and_master   the master bus (tilt EQ, compressor)
-#   and_texture   the texture engine
+#   and_texture   the texture engine                     and_macro    the MACRO engine (Plaits, C++: needs c++)
 #   The screens' PNGs go to build/oled (tests/oled_render.py).
 # CORE at 48 kHz (firmware/src with the tables made at MELODEE_FS=48000, as platform/daisy/Makefile makes them):
 #   regress       golden renders (every engine x preset, voice modes, FX, a 4-track mix) against tests/golden_48k.txt,
@@ -40,7 +40,7 @@ PARALLEL=${PARALLEL:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
 QUIET=1
 PIL=0; python3 -c "import PIL" 2>/dev/null && PIL=1
 
-JOBS="oled_render and_keys and_home and_ext and_ui and_pics and_master and_texture
+JOBS="oled_render and_keys and_home and_ext and_ui and_pics and_master and_texture and_macro
     regress fs_test gen_test chain_test entries_test planner_test split_test recipes_test
     pid_test cord_test help_pack_test tables_test mod_test mod_spread_test fm6_test drum_test chord_test"
 WANT=
@@ -101,6 +101,20 @@ job_and_master() { echo "== Andamento master bus: MIX 0 bit-identical, bypass, c
     build and_master and_master_test -O1 $AND && { "$OUT/and_master" || fail "and_master"; }; }
 job_and_texture() { echo "== Andamento texture engine: MIX 0 bit-identical, capture, FREEZE, DENS, AT_GRAINS bound, determinism"
     build and_texture and_texture_test -O1 $AND && { "$OUT/and_texture" || fail "and_texture"; }; }
+job_and_macro() { echo "== Andamento MACRO (eng_macro.c, Plaits): every model plays, pitch at 48 kHz, HIT, every knob, arena memory, cost"
+    command -v c++ > /dev/null || { fail "no c++ (Plaits is C++)"; return; }
+    local f o objs= flags; flags=$(sh platform/daisy/plaits_sources.sh --flags)
+    mkdir -p "$OUT/mi"
+    for f in $(sh platform/daisy/plaits_sources.sh); do      # (Plaits as platform/daisy builds it, for this computer)
+        o=$OUT/mi/$(echo "$f" | tr / _).o
+        c++ -O2 -std=c++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics -w $flags -c "$f" -o "$o" ||
+            { fail "compile $f"; return; }
+        objs="$objs $o"
+    done
+    $CC -O2 $AND -DMELODEE_PLAITS=1 -c tests/macro_test.c -o "$OUT/macro_test.o" &&
+        c++ -o "$OUT/and_macro" "$OUT/macro_test.o" $objs -lm -pthread || { fail "compile tests/macro_test.c"; return; }
+    "$OUT/and_macro" || fail "and_macro"
+}
 
 job_regress() {
     t "regression at 48 kHz: golden renders (tests/golden_48k.txt), health, voices, routing" -O2 $CORE -- \

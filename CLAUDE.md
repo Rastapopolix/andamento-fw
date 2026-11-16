@@ -44,7 +44,7 @@ web/andamento/build.sh --headers                        # only the generated hea
 ```
 
 Host tests: `tests/and_tests.sh` (about a minute): Andamento's own jobs (`oled_render and_keys and_home and_ext
-and_ui and_pics and_master and_texture`) and the core's tests at 48 kHz, among them the golden renders against
+and_ui and_pics and_master and_texture and_macro`) and the core's tests at 48 kHz, among them the golden renders against
 `tests/golden_48k.txt`. No FM-1 package or JieLi SDK. `tests/and_tests.sh --list` names the jobs; name some to run only
 those; `GOLDEN_UPDATE=1 tests/and_tests.sh regress` only after an intended change of the sound (review the diff).
 Its header lists the core tests not yet ported to 48 kHz. `tests/run_tests.sh` is Tessera's runner (FM-1 jobs) and

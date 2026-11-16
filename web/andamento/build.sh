@@ -29,12 +29,22 @@ PY
 [ "$1" = --headers ] && exit 0
 command -v emcc >/dev/null 2>&1 || PATH="${EMSDK:-$HOME/emsdk}/upstream/emscripten:$PATH"
 command -v emcc >/dev/null 2>&1 || { echo "emcc not found: install Emscripten (emsdk)"; exit 1; }
-# as web/sim/build.sh: no fused multiply-adds, a 1 MiB stack, no file system; the device's engine set; no screen
-# reader (Andamento's UI does not speak yet)
+# MACRO's C++ (Plaits, platform/daisy/plaits_sources.sh) first, as objects
+mkdir -p "$OUT/mi"
+MI_OBJS=
+for f in $(sh platform/daisy/plaits_sources.sh); do
+    o=$OUT/mi/$(echo "$f" | tr / _).o
+    em++ -O2 -ffp-contract=off -std=c++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics -w \
+        $(sh platform/daisy/plaits_sources.sh --flags) -c "$f" -o "$o"
+    MI_OBJS="$MI_OBJS $o"
+done
+# as web/sim/build.sh: no fused multiply-adds, a 1 MiB stack, no file system; the device's engine set (with MACRO, as
+# platform/daisy builds it); no screen reader (Andamento's UI does not speak yet)
 emcc -O2 -ffp-contract=off -w -DMELODEE_USB_AUDIO=1 -DMELODEE_ACCESS=0 -DMELODEE_LOOK=1 -DMELODEE_FM6=1 -DMELODEE_PHYS=1 \
-    "-DMELODEE_VERSION=\"andamento web\"" -I"$GEN" -Ifirmware/src -Itests \
-    --no-entry -sSTANDALONE_WASM -sSTACK_SIZE=1048576 -sINITIAL_MEMORY=33554432 -sFILESYSTEM=0 \
-    -o "$OUT/andamento.wasm" web/andamento/sim.c
+    -DMELODEE_PLAITS=1 "-DMELODEE_VERSION=\"andamento web\"" -I"$GEN" -Ifirmware/src -Itests \
+    -c web/andamento/sim.c -o "$OUT/sim.o"
+em++ -O2 --no-entry -sSTANDALONE_WASM -sSTACK_SIZE=1048576 -sINITIAL_MEMORY=33554432 -sFILESYSTEM=0 \
+    -o "$OUT/andamento.wasm" "$OUT/sim.o" $MI_OBJS
 # the page: index.html with the worklet and the wasm (base64) put in
 python3 - "$OUT" <<'PY'
 import base64, sys

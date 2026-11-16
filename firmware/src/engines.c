@@ -35,6 +35,7 @@ static const engine_t ENG_RETIRED = {         /* 13 without MELODEE_SLICE: reser
 /* Each track owns only its selected engine's working state. Simple engines
  * use voice_t alone. State is released after the old engine's switch fade. */
 #include "resources.c"
+#include "eng_macro.c"          /* MACRO: Plaits' synthesis (MELODEE_PLAITS; macro_glue.cc, third_party/mi) */
 static uint32_t eng_state_size(uint32_t e)
 {
     switch (e) {
@@ -43,6 +44,9 @@ static uint32_t eng_state_size(uint32_t e)
 #endif
 #if MELODEE_LEGACY_EXTRAS
     case 7: return sizeof(drw_part_t);
+#endif
+#if MELODEE_PLAITS
+    case ENGI_MACRO: return mc_bytes();             /* MACRO: Plaits' voice and its working memory (eng_macro.c) */
 #endif
     case ENGI_DRUM: return sizeof(drum909_part_t);
     case ENGI_FM6: return sizeof(fm6_part_t);
@@ -128,7 +132,11 @@ static const engine_t *const ENGINES[NENGINES] = {
     &ENG_RETIRED,                /* 19: ORACLE left out of the build; stored ID reserved */
 #endif
     &ENG_RETIRED,                /* 20: reserved (USER_NATIVE_P5, the browser's Prophet user bank) */
-    &ENG_RETIRED,                /* 21: retired MACRO (a Plaits prototype); stored ID reserved */
+#if MELODEE_PLAITS
+    &ENG_MACRO,                  /* 21: MACRO, Plaits' synthesis (back in Andamento 2026-11-16) */
+#else
+    &ENG_RETIRED,                /* 21: MACRO left out of the build; stored ID reserved */
+#endif
 };
 
 /* a track's engine number as an index (the audio paths: a compare, cheaper than % NENGINES; a bad number: 0) */
@@ -172,6 +180,9 @@ static const uint8_t ENGINE_ORDER[NENG_SHOWN] = {
 #if MELODEE_PHYS
     9,                           /* PHYS */
 #endif
+#endif
+#if MELODEE_PLAITS
+    ENGI_MACRO,                  /* MACRO */
 #endif
 #if MELODEE_SLICE
     13,                          /* SLICE */
