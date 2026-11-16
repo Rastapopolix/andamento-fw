@@ -22,7 +22,7 @@ GPL-3.0-only. **Status: in development, no hardware yet.** By **Theo Dainis**
 | `firmware/src/` | the core inherited from Tessera: generators, sequencer, engines, mods |
 | `tests/` | host tests: `tests/and_tests.sh` runs Andamento's (`tests/and_*_test.c`, `tests/oled_render.c`) and the core's at 48 kHz |
 
-Much of the tree is still Tessera's FM-1 code (its HAL, UI, installer, site and docs) and is being removed or
+Much of the tree is still Tessera's FM-1 code (its HAL, UI, installer and manuals; its site and release notes are gone) and is being removed or
 rewritten as Andamento needs: see `CLAUDE.md`. Tessera's own README is kept as `README-tessera.md` until then.
 
 ## Build
