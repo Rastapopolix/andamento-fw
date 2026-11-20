@@ -2,7 +2,7 @@
 
 Andamento firmware: Theo Dainis's generative instrument on a Daisy Seed (GPL-3.0-only). Forked from Tessera
 (github.com/Rastapopolix/tessera, the FM-1 firmware) on 2026-11-14 at Tessera `develop` 81aa730f, so Andamento can
-grow past the FM-1's limits. Build flags and some file names still say `MELODEE_` / `tessera_`; rename them only as
+grow past the FM-1's limits; since 2026-11-18 it is moving onto Tessera's shared core (below). Build flags and some file names still say `MELODEE_` / `tessera_`; rename them only as
 part of a change that needs it.
 
 Plans, decisions and handovers live in the private notes repo `tessera-notes`
@@ -22,15 +22,23 @@ github.com/Rastapopolix/andamento. Claim work under tessera-notes `ROADMAP.md` "
 `main` is the trunk: feature branches from `main` (`claude/<topic>`), pull requests into `main`. No release
 process yet.
 
-## Relationship to Tessera (decided 2026-11-14)
+## Relationship to Tessera (decided 2026-11-18; migration in progress)
 
-- Andamento is its own firmware. It does not follow Tessera's parameter IDs, cord codes, project format or the
-  FM-1's limits (flash, RAM, 4 tracks, 8 voices, 44.1 kHz). Changes here never need to keep the FM-1 working.
-- **Its own project format.** Tessera `.tsp` files are not Andamento projects; an importer from `.tsp` may come
-  later. Number claims (IDs, save parts) are Andamento's own, kept in `andamento/` in the notes repo, not in
-  Tessera's ROADMAP "Number claims".
-- Borrow from Tessera by hand when it helps (a new generator, a fix): pick the change, adapt it, credit it in the
-  commit message (`From Tessera <sha> / PR #n`). Never merge Tessera wholesale.
+**Tessera owns the shared core** (tessera-notes CONTRACTS.md section 5, Theo 2026-11-18; it narrows the 2026-11-14
+fork rules). The plan, step by step: tessera-notes `andamento/CORE_MIGRATION.md`.
+
+- **The core is Tessera's:** the engines, voices, mods, mixer, sequencer, generators, the core API
+  (`platform/core/` in Tessera) and the core's Daisy build live in the Tessera repo, and Tessera's CI keeps them
+  building. Andamento's needs (8 tracks, the voice stage, MACRO, the CV / MIDI output hooks) become build options of
+  Tessera's core, off on the FM-1.
+- **This repo keeps what is Andamento's own:** the UI and pages, the board, storage, the SDRAM extras. It will take
+  the core from Tessera at a pinned version (a submodule, if Theo agrees) instead of carrying a copy.
+- **One save format:** `.tsp`, with tracks 5..8 and Andamento's own settings in new TSP parts the FM-1 skips. IDs and
+  part numbers are claimed in tessera-notes ROADMAP "Number claims", like everyone else's. The ANDP format
+  (`platform/andamento/and_project.c`) is replaced in the migration.
+- **Until the migration lands**, `firmware/src` here is still the fork's copy: fix a core bug in Tessera first (a PR
+  there), then here by hand if it can't wait, and say so in both PRs. Don't grow the copy: a new core feature goes
+  to Tessera behind an option.
 - Generator, page and parameter names stay Tessera's where the idea is the same (shorten for the screen, don't
   rename the idea). On-screen names avoid other makers' product names (ATLAS, TIDE, SWARM, Beads); credits name the
   originals.
